@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:coldchain:event:v1",
+  "title": "Cold-chain source event, contract v1",
+  "description": "One Kafka record value. Timestamps are RFC 3339 and evaluated in UTC; startTime/endTime form a half-open interval [startTime, endTime) at whole-second precision. Fields not named here are ignored and excluded from the semantic payload hash. Model.parse is the enforcing implementation; this schema documents it.",
+  "type": "object",
+  "required": ["eventId", "revision", "kind", "eventTime"],
+  "properties": {
+    "eventId": {"$ref": "#/$defs/id", "description": "Globally unique across all kinds; keeps one kind across revisions"},
+    "revision": {"type": "integer", "minimum": 1, "description": "Correction counter; the highest revision supersedes. A retry of the same eventId and revision must carry the same semantic payload"},
+    "kind": {"enum": ["READING", "PLACEMENT", "ASSIGNMENT", "SPEC", "INVENTORY"]},
+    "eventTime": {"$ref": "#/$defs/time", "description": "When the source recorded the fact; at most 5 minutes after the Kafka record timestamp"},
+    "productId": {"$ref": "#/$defs/id", "description": "Serialized saleable unit"},
+    "productCode": {"$ref": "#/$defs/id", "description": "Product (SKU) code that specifications apply to"},
+    "lotId": {"$ref": "#/$defs/id"},
+    "containerId": {"$ref": "#/$defs/id"},
+    "sensorId": {"$ref": "#/$defs/id"},
+    "startTime": {"$ref": "#/$defs/second"},
+    "endTime": {"$ref": "#/$defs/second"},
+    "temperatureC": {"$ref": "#/$defs/celsius", "description": "Degrees Celsius, assumed uniform over the reading interval"},
+    "minC": {"$ref": "#/$defs/celsius", "description": "Lowest acceptable temperature, inclusive"},
+    "maxC": {"$ref": "#/$defs/celsius", "description": "Highest acceptable temperature, inclusive; must be >= minC"},
+    "maxExcursionSeconds": {"type": "integer", "minimum": 0, "description": "Seconds of cumulative excursion allowed before quality review"},
+    "location": {"$ref": "#/$defs/id"},
+    "status": {"enum": ["IN_STOCK", "DISPATCHED"]}
+  },
+  "allOf": [
+    {"if": {"properties": {"kind": {"const": "READING"}}}, "then": {"required": ["sensorId", "startTime", "endTime", "temperatureC"], "description": "Topic coldchain.sensors; endTime at most 5 minutes after the Kafka record timestamp"}},
+    {"if": {"properties": {"kind": {"const": "PLACEMENT"}}}, "then": {"required": ["productId", "productCode", "lotId", "containerId", "startTime", "endTime"], "description": "Topic coldchain.traceability"}},
+    {"if": {"properties": {"kind": {"const": "ASSIGNMENT"}}}, "then": {"required": ["sensorId", "containerId", "startTime", "endTime"], "description": "Topic coldchain.traceability"}},
+    {"if": {"properties": {"kind": {"const": "SPEC"}}}, "then": {"required": ["productCode", "startTime", "endTime", "minC", "maxC", "maxExcursionSeconds"], "description": "Topic coldchain.specifications"}},
+    {"if": {"properties": {"kind": {"const": "INVENTORY"}}}, "then": {"required": ["productId", "location", "status"], "description": "Topic coldchain.inventory"}}
+  ],
+  "$defs": {
+    "id": {"type": "string", "pattern": "\\S"},
+    "time": {"type": "string", "format": "date-time"},
+    "second": {"type": "string", "format": "date-time", "pattern": "^[^.]*(\\.0+)?(Z|[+-]\\d{2}:\\d{2})$"},
+    "celsius": {"type": "number", "minimum": -100, "maximum": 100}
+  }
+}

@@ -1,4 +1,5 @@
 package io.coldchain;
+import java.util.*;
 import org.apache.spark.sql.*;
 import org.apache.spark.sql.expressions.Window;
 import org.apache.spark.sql.types.StructType;
@@ -12,26 +13,41 @@ public final class Model {
   .add("minC","double").add("maxC","double").add("maxExcursionSeconds","long")
   .add("location","string").add("status","string");
  private Model() {}
+ // Identifiers need a non-whitespace character; trim() alone would let tabs and newlines through.
+ static String ids(String... names){return String.join(" AND ",Arrays.stream(names).map(n->n+" RLIKE '\\\\S'").toList());}
+ // Half-open [startTime,endTime) in UTC at whole-second precision, because durations are counted in seconds.
+ static final String INTERVAL="startTime < endTime AND startTime = date_trunc('SECOND',startTime) AND endTime = date_trunc('SECOND',endTime)";
+ // BETWEEN also rejects NaN and infinities.
+ static final String CELSIUS=" BETWEEN -100 AND 100";
+ static final String SKEW="kafkaTime + INTERVAL 5 MINUTES";
  public static Dataset<Row> parse(Dataset<Row> bronze) {
+  Column[] fields=Arrays.stream(EVENT.fieldNames()).map(functions::col).toArray(Column[]::new);
   return bronze.withColumn("e",from_json(col("raw"),EVENT)).selectExpr("*","e.*").drop("e")
-   .withColumn("valid",coalesce(expr("eventId IS NOT NULL AND length(trim(eventId)) > 0 AND revision >= 1 "
-    +"AND eventTime IS NOT NULL AND eventTime <= kafkaTime + INTERVAL 5 MINUTES AND ("
-    +"(kind = 'READING' AND sensorId IS NOT NULL AND startTime < endTime AND temperatureC BETWEEN -100 AND 100 "
-    +"AND topic = 'coldchain.sensors') OR "
-    +"(kind = 'PLACEMENT' AND productId IS NOT NULL AND productCode IS NOT NULL AND lotId IS NOT NULL "
-    +"AND containerId IS NOT NULL AND startTime < endTime AND topic = 'coldchain.traceability') OR "
-    +"(kind = 'ASSIGNMENT' AND sensorId IS NOT NULL AND containerId IS NOT NULL AND startTime < endTime "
-    +"AND topic = 'coldchain.traceability') OR "
-    +"(kind = 'SPEC' AND productCode IS NOT NULL AND startTime < endTime AND minC <= maxC "
+   // Hash parsed values, not bytes: key order, whitespace and timestamp spelling do not change meaning.
+   .withColumn("payloadHash",sha2(to_json(struct(fields),Map.of("timestampFormat","yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX")),256))
+   .withColumn("valid",coalesce(expr(ids("eventId")+" AND revision >= 1 "
+    +"AND eventTime IS NOT NULL AND eventTime <= "+SKEW+" AND ("
+    +"(kind = 'READING' AND "+ids("sensorId")+" AND "+INTERVAL+" AND endTime <= "+SKEW+" AND temperatureC"+CELSIUS
+    +" AND topic = 'coldchain.sensors') OR "
+    +"(kind = 'PLACEMENT' AND "+ids("productId","productCode","lotId","containerId")+" AND "+INTERVAL
+    +" AND topic = 'coldchain.traceability') OR "
+    +"(kind = 'ASSIGNMENT' AND "+ids("sensorId","containerId")+" AND "+INTERVAL
+    +" AND topic = 'coldchain.traceability') OR "
+    +"(kind = 'SPEC' AND "+ids("productCode")+" AND "+INTERVAL+" AND minC"+CELSIUS+" AND maxC"+CELSIUS+" AND minC <= maxC "
     +"AND maxExcursionSeconds >= 0 AND topic = 'coldchain.specifications') OR "
-    +"(kind = 'INVENTORY' AND productId IS NOT NULL AND location IS NOT NULL AND status IN ('IN_STOCK','DISPATCHED') "
+    +"(kind = 'INVENTORY' AND "+ids("productId","location")+" AND status IN ('IN_STOCK','DISPATCHED') "
     +"AND topic = 'coldchain.inventory'))"),lit(false)));
  }
+ public static Dataset<Row> conflicts(Dataset<Row> valid) {
+  // One ID and revision must mean the same thing on every retry, and an ID keeps its kind across revisions.
+  Dataset<Row> payloads=valid.groupBy("eventId","revision").agg(countDistinct("payloadHash").alias("variants"))
+   .filter("variants > 1").select("eventId");
+  Dataset<Row> kinds=valid.groupBy("eventId").agg(countDistinct("kind").alias("kinds")).filter("kinds > 1").select("eventId");
+  return payloads.union(kinds).distinct();
+ }
  public static Dataset<Row> canonical(Dataset<Row> valid) {
-  // The same ID and revision must carry the identical raw contract on every retry.
-  Dataset<Row> conflicts=valid.groupBy("eventId","revision").agg(countDistinct("raw").alias("variants"))
-   .filter("variants > 1").select("eventId").distinct();
-  return valid.join(conflicts,"eventId","left_anti")
+  // The highest revision wins regardless of arrival order; gaps between revisions are allowed.
+  return valid.join(conflicts(valid),"eventId","left_anti")
    .withColumn("rn",row_number().over(Window.partitionBy("eventId")
     .orderBy(col("revision").desc(),col("kafkaTime").desc(),col("partition").desc(),col("offset").desc())))
    .filter("rn=1").drop("rn","valid");
