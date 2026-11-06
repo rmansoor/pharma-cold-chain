@@ -3,8 +3,9 @@ WORKDIR /build
 COPY pom.xml maven-settings.xml ./
 RUN mvn -s maven-settings.xml -B -q dependency:go-offline
 COPY src src
-RUN mvn -s maven-settings.xml -B -q package dependency:copy-dependencies -DincludeScope=runtime
-FROM eclipse-temurin:17-jre
+# Tests run in CI (.github/workflows/ci.yml); the image build only packages.
+RUN mvn -s maven-settings.xml -B -q package -DskipTests dependency:copy-dependencies -DincludeScope=runtime
+FROM eclipse-temurin:17.0.21_9-jre
 WORKDIR /app
 COPY --from=build /build/target/cold-chain-pipeline-1.0.0.jar /app/pipeline.jar
 COPY --from=build /build/target/dependency /app/lib

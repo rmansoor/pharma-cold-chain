@@ -17,7 +17,17 @@
 
 ## Local operating runbook
 
-Requirements: Docker Compose v2, network for image/dependency downloads and at least about 6 GB available Docker memory. Run from project root:
+Requirements: Docker Compose v2, network access for the first image and dependency download, and at least 4 GB of Docker memory (6 GB recommended when other stacks share it).
+
+| Component | Version (pinned) | Measured memory (idle, after demo) | Host port |
+|---|---|---|---|
+| Kafka (KRaft, single broker) | apache/kafka:3.9.1 | ~330 MiB | 29092 |
+| Pipeline (Spark 3.5.7 local[2], Delta 3.3.3) | eclipse-temurin:17.0.21_9-jre, heap capped at 2 GiB | ~1.6 GiB | 4041 (Spark UI) |
+| Build image | maven:3.9.9-eclipse-temurin-17 | build only | none |
+
+Measured on 2026-11-05 with Docker Desktop (12 CPUs, 7.7 GiB). The pipeline image is 911 MB and the Kafka image 626 MB; after the demo, Kafka data is ~360 MB (mostly preallocated segments) and lake data is ~220 KB. Peak memory under load has not been measured. Host ports were chosen so they don't conflict with the fraud demo (19092, 4040).
+
+Run from project root:
 
 ```sh
 docker compose up -d --build pipeline
@@ -32,7 +42,10 @@ mvn -s maven-settings.xml -B test
 docker compose logs -f pipeline
 docker compose restart pipeline
 docker compose down
+scripts/restart-check.sh   # after the demo: full down/up, then one new event
 ```
+
+`scripts/restart-check.sh [project]` checks that persisted state survives a full `down`/`up`: counts must be unchanged with no new input, and one new event must add exactly one Bronze row and continue the snapshot sequence. CI (`.github/workflows/ci.yml`) runs the Spark tests, a gitleaks scan of source and history, then a fresh Compose deployment, the demo and the restart check on every pull request and every push to main. Images contain only the application jar, runtime libraries and the OS CA bundle; no credentials are used or stored.
 
 `docker compose down` preserves named volumes. `docker compose down -v` deliberately destroys this project's events, lake data and checkpoints; use only for a deliberate disposable-demo reset. macOS Docker may need /Applications/Docker.app/Contents/Resources/bin on PATH. JDK 17 is used in containers and for the local build. The application has no automated retention purge.
 
@@ -62,7 +75,7 @@ Candidate engineering objectives to negotiate: publication within 60 seconds at 
 
 ## Test strategy and current evidence
 
-Six local Spark tests pass (2026-11-05, SID-13): revision changes exposure A->B while duplicates remain bounded; overlapping readings use interval union; malformed/conflicting contracts are excluded; every published contract example is valid; 22 single-rule violations (blank identifiers, revision, kind/status enums, interval bounds, subsecond bounds, future readings, NaN/infinite values, wrong topic, malformed JSON) are rejected; reformatted retries do not conflict while a changed payload or a reused ID across kinds does. No real-Kafka container run or fault-injection result has yet been recorded for this project.
+Six local Spark tests pass (2026-11-05, SID-13): revision changes exposure A->B while duplicates remain bounded; overlapping readings use interval union; malformed/conflicting contracts are excluded; every published contract example is valid; 22 single-rule violations (blank identifiers, revision, kind/status enums, interval bounds, subsecond bounds, future readings, NaN/infinite values, wrong topic, malformed JSON) are rejected; reformatted retries do not conflict while a changed payload or a reused ID across kinds does. Real-broker evidence (2026-11-05, SID-14): two runs from empty volumes passed the demo verifier and the restart check. CI repeats both on every change. No fault-injection (mid-batch crash) result is recorded yet; that belongs to SID-15 and SID-28.
 
 Required tests: half-open boundaries; multiple disjoint placements; nested splits; zero coverage; partial coverage; safe full coverage; exact threshold; non-finite temperature; incompatible topics; missing/overlapping specifications; simultaneous assignments; sensor calibration; equal-time inventory changes; product removal; snapshot retry; reader during partial write; new lineage replay; load/skew/backlog recovery; access-denial paths.
 
