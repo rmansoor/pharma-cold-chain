@@ -37,6 +37,12 @@ public final class Pipeline {
   else DeltaTable.forPath(s,path).as("t").merge(data.as("s"),"t.topic=s.topic AND t.partition=s.partition AND t.offset=s.offset")
    .whenNotMatched().insertAll().withSchemaEvolution().execute();
  }
+ // Append-only audit: each case's first OPEN and first RESOLVED state, with the snapshot that first saw it.
+ // Keyed on caseId and status, so a replayed batch adds nothing.
+ public static void recordCases(Dataset<Row> states,long id,String path) {
+  merge(states.sparkSession(),states.withColumn("snapshotId",lit(id)).withColumn("recordedAt",current_timestamp()),path,
+   "t.caseId=s.caseId AND t.status=s.status");
+ }
  static void snapshot(Dataset<Row> data,String path) {
   data.write().format("delta").mode("overwrite").option("overwriteSchema",true).save(path);
  }
@@ -51,10 +57,10 @@ public final class Pipeline {
   // Rebuild from durable evidence, so late arrivals and higher revisions revise past exposure.
   Dataset<Row> parsed=Model.parse(s.read().format("delta").load(DATA+"/bronze/events")).cache();
   Dataset<Row> good=parsed.filter("valid");
-  Dataset<Row> conflicts=Model.conflicts(good);
-  snapshot(parsed.filter("NOT valid").select("topic","partition","offset","kafkaTime","sourceSystem","ingestedAt","raw")
-   .withColumn("error",lit("INVALID_CONTRACT")),DATA+"/silver/quarantine");
-  snapshot(conflicts,DATA+"/silver/conflicting_ids");
+  Dataset<Row> quarantine=Model.quarantine(parsed),cases=Model.conflictCases(good);
+  snapshot(quarantine,DATA+"/silver/quarantine");
+  snapshot(cases,DATA+"/silver/conflict_cases");
+  recordCases(Model.caseStates(quarantine,cases),id,DATA+"/silver/case_log");
   Dataset<Row> canonical=Model.canonical(good);
   snapshot(canonical,DATA+"/silver/events_current");
   // Pin canonical input by reading the materialized version for all Gold calculations.
