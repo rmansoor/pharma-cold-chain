@@ -2,9 +2,9 @@
 
 ## 1. Identity and time semantics
 
-Every source event has eventId, positive revision, kind and eventTime. eventId is globally unique across all kinds; revision is monotonically increasing for corrections. A retry must retain identical payload bytes for its ID and revision in the prototype. Different whitespace currently counts as a conflicting contract: canonical semantic hashes are a planned improvement. Event time must not exceed the Kafka timestamp by more than five minutes.
+Every source event has eventId, positive revision, kind and eventTime ([event-contracts.md](event-contracts.md) is the full contract). eventId is globally unique across all kinds and keeps one kind across revisions; the highest revision wins regardless of arrival order. A retry must carry the same semantic payload for its ID and revision: payloadHash is SHA-256 over the parsed contract fields, so key order, whitespace and timestamp/number spelling do not count as conflicts. Event time and reading end times must not exceed the Kafka timestamp by more than five minutes.
 
-Intervals are half-open [startTime,endTime). UTC is used by Spark SQL. Measurements explicitly cover a supplied interval at temperatureC; the prototype assumes that value represents the interval uniformly. It never extends a point reading across an unobserved gap. Durations are measured at whole-second precision; production validation must either reject subsecond inputs or adopt a higher-precision duration model.
+Intervals are half-open [startTime,endTime). UTC is used by Spark SQL. Measurements explicitly cover a supplied interval at temperatureC; the prototype assumes that value represents the interval uniformly. It never extends a point reading across an unobserved gap. Durations are measured at whole-second precision, and interval bounds with a nonzero fractional second are rejected as invalid contracts.
 
 Event-time lateness is not bounded by a watermark in this implementation. Historical source records are reevaluated from Bronze on each nonempty batch. This intentionally supports late corrections, at the cost of unbounded scan work as retained history grows. Five-second triggers schedule work; they are not a five-second assessment SLA.
 
@@ -18,7 +18,7 @@ Event-time lateness is not bounded by a watermark in this implementation. Histor
 | INVENTORY | coldchain.inventory | productId, location, status: IN_STOCK or DISPATCHED |
 | SPEC | coldchain.specifications | productCode, startTime, endTime, minC <= maxC, maxExcursionSeconds >= 0 |
 
-All kinds also require the common identity/time fields. Source JSON is parsed with one explicit nullable schema; event-specific predicates decide validity. Invalid contracts are not silently promoted. Identifiers beyond eventId are checked for non-null but not universally for nonblank strings; stricter validation is required before external ingestion. Bounds on measured intervals relative to ingestion time are not yet enforced.
+All kinds also require the common identity/time fields. Source JSON is parsed with one explicit nullable schema; event-specific predicates decide validity. Invalid contracts are not silently promoted. Every identifier must contain a non-whitespace character; temperatures and specification bounds must be finite and within -100 to 100 °C. The published JSON Schema is contracts/coldchain-event-v1.schema.json, with one example per kind in contracts/examples.
 
 Product specifications are operational input, not static Java constants. Overlapping specification validity or simultaneous competing assignments currently participate in joins without an ambiguity resolver. The target must either reject conflicts or apply an approved precedence rule and expose uncertainty. The current minimum permitted excursion among matching specifications is conservative but cannot replace approved product policy.
 
@@ -28,7 +28,7 @@ Product specifications are operational input, not static Java constants. Overlap
 |---|---|---|
 | bronze/events | topic, partition, offset / insert-only MERGE | Raw JSON and broker timestamp; duplicates with distinct offsets remain evidence |
 | silver/quarantine | rebuilt snapshot | Invalid raw records, source coordinates, INVALID_CONTRACT |
-| silver/conflicting_ids | rebuilt snapshot | IDs with competing raw payloads for any revision |
+| silver/conflicting_ids | rebuilt snapshot | IDs with competing semantic payloads for one revision, or used for more than one kind |
 | silver/events_current | latest eventId revision / rebuilt snapshot | Valid canonical fields plus source metadata |
 | gold/assessment_history | productId, snapshotId / insert-only MERGE | Coverage, excursion, missing data, rule, inventory and evidence IDs |
 | gold/commits | snapshotId / insert-only MERGE | Publication timestamp and product count |
@@ -75,4 +75,4 @@ Persist versioned domain tables for placements, container ancestry, assignments,
 
 ## 8. Code responsibilities
 
-Model.java: parsing, conflict exclusion, canonical revisions, interval joins/unions and assessment SQL. Pipeline.java: Kafka source, foreachBatch persistence and committed publication. Simulator.java: synthetic initial state, retries, malformed event and assignment correction. VerifyDemo.java: read committed assessments and check the expected correction. ModelTest.java: three real Spark tests for correction/deduplication, interval union and invalid/conflicting contracts.
+Model.java: contract validation, semantic payload hashes, conflict exclusion, canonical revisions, interval joins/unions and assessment SQL. Pipeline.java: Kafka source, foreachBatch persistence and committed publication. Simulator.java: synthetic initial state, retries, malformed event and assignment correction. VerifyDemo.java: read committed assessments and check the expected correction. ModelTest.java: six real Spark tests for correction/deduplication, interval union, invalid/conflicting contracts, published examples, per-rule contract violations, and formatting-insensitive conflict detection.

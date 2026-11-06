@@ -1,0 +1,3 @@
+{"eventId": "placement-0001", "revision": 1, "kind": "PLACEMENT", "eventTime": "2026-01-01T11:55:00Z",
+ "productId": "UNIT-A", "productCode": "DRUG-DEMO", "lotId": "LOT-1", "containerId": "BOX-A",
+ "startTime": "2026-01-01T12:00:00Z", "endTime": "2026-01-01T18:00:00Z"}

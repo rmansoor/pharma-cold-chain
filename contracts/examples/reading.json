@@ -1,0 +1,2 @@
+{"eventId": "reading-0001", "revision": 1, "kind": "READING", "eventTime": "2026-01-01T12:10:05Z",
+ "sensorId": "SENSOR-1", "startTime": "2026-01-01T12:00:00Z", "endTime": "2026-01-01T12:10:00Z", "temperatureC": 5.4}

@@ -62,7 +62,7 @@ Candidate engineering objectives to negotiate: publication within 60 seconds at 
 
 ## Test strategy and current evidence
 
-Three local Spark tests passed: revision changes exposure A->B while duplicates remain bounded; overlapping readings use interval union; malformed/conflicting contracts are excluded. No real-Kafka container run or fault-injection result has yet been recorded for this project.
+Six local Spark tests pass (2026-11-05, SID-13): revision changes exposure A->B while duplicates remain bounded; overlapping readings use interval union; malformed/conflicting contracts are excluded; every published contract example is valid; 22 single-rule violations (blank identifiers, revision, kind/status enums, interval bounds, subsecond bounds, future readings, NaN/infinite values, wrong topic, malformed JSON) are rejected; reformatted retries do not conflict while a changed payload or a reused ID across kinds does. No real-Kafka container run or fault-injection result has yet been recorded for this project.
 
 Required tests: half-open boundaries; multiple disjoint placements; nested splits; zero coverage; partial coverage; safe full coverage; exact threshold; non-finite temperature; incompatible topics; missing/overlapping specifications; simultaneous assignments; sensor calibration; equal-time inventory changes; product removal; snapshot retry; reader during partial write; new lineage replay; load/skew/backlog recovery; access-denial paths.
 

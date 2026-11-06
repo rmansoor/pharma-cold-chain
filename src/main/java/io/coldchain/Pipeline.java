@@ -30,8 +30,7 @@ public final class Pipeline {
   // Rebuild from durable evidence, so late arrivals and higher revisions revise past exposure.
   Dataset<Row> parsed=Model.parse(s.read().format("delta").load(DATA+"/bronze/events")).cache();
   Dataset<Row> good=parsed.filter("valid");
-  Dataset<Row> conflicts=good.groupBy("eventId","revision").agg(countDistinct("raw").alias("variants"))
-   .filter("variants>1").select("eventId").distinct();
+  Dataset<Row> conflicts=Model.conflicts(good);
   snapshot(parsed.filter("NOT valid").select("topic","partition","offset","kafkaTime","raw")
    .withColumn("error",lit("INVALID_CONTRACT")),DATA+"/silver/quarantine");
   snapshot(conflicts,DATA+"/silver/conflicting_ids");
