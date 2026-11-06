@@ -26,7 +26,7 @@ Product specifications are operational input, not static Java constants. Overlap
 
 | Path under DATA_DIR | Key / write mode | Content |
 |---|---|---|
-| bronze/events | topic, partition, offset / insert-only MERGE | Raw JSON and broker timestamp; duplicates with distinct offsets remain evidence |
+| bronze/events | topic, partition, offset / insert-only MERGE | Raw JSON, Kafka key, broker timestamp (kafkaTime), sourceSystem and sourceSystemDeclared, ingestedAt and ingestBatchId. A replayed offset keeps its first ingestedAt and ingestBatchId; a repeated payload at a new offset is a new row of evidence. Rows written before these columns existed have nulls in them |
 | silver/quarantine | rebuilt snapshot | Invalid raw records, source coordinates, INVALID_CONTRACT |
 | silver/conflicting_ids | rebuilt snapshot | IDs with competing semantic payloads for one revision, or used for more than one kind |
 | silver/events_current | latest eventId revision / rebuilt snapshot | Valid canonical fields plus source metadata |
@@ -61,7 +61,7 @@ assessmentHash covers principal metrics, assessment, inventory, evidence IDs and
 
 ## 6. Publication and restart
 
-One writer is assumed. Bronze MERGE is idempotent on source coordinates. Gold MERGE is idempotent on product/snapshot. Silver overwrite is atomic per Delta table, not across all tables. The Gold manifest is written last. An in-flight Silver version must not be treated as an approved Gold snapshot.
+One writer is assumed. Bronze MERGE is idempotent on source coordinates; scripts/crash-check.sh kills the pipeline right after the Bronze commit (FAIL_AFTER_BRONZE_BATCH) and checks that the restarted query replays that batch without duplicating or losing offsets. Gold MERGE is idempotent on product/snapshot. Silver overwrite is atomic per Delta table, not across all tables. The Gold manifest is written last. An in-flight Silver version must not be treated as an approved Gold snapshot.
 
 A reader first pins a committed snapshotId, then reads history at exactly that ID; it must never independently select the newest row for each product. A crash after Gold history but before the manifest leaves an unpublished snapshot. A retry inserts no duplicate assessment key and then publishes the manifest. Consumers ignore any unpublished rows.
 
@@ -75,4 +75,4 @@ Persist versioned domain tables for placements, container ancestry, assignments,
 
 ## 8. Code responsibilities
 
-Model.java: contract validation, semantic payload hashes, conflict exclusion, canonical revisions, interval joins/unions and assessment SQL. Pipeline.java: Kafka source, foreachBatch persistence and committed publication. Simulator.java: synthetic initial state, retries, malformed event and assignment correction. VerifyDemo.java: read committed assessments and check the expected correction. Inspect.java: print persisted-state counts used by scripts/restart-check.sh. ModelTest.java: six real Spark tests for correction/deduplication, interval union, invalid/conflicting contracts, published examples, per-rule contract violations, and formatting-insensitive conflict detection.
+Model.java: contract validation, semantic payload hashes, conflict exclusion, canonical revisions, interval joins/unions and assessment SQL. Pipeline.java: Kafka source, foreachBatch persistence and committed publication. Simulator.java: synthetic initial state, retries, malformed event and assignment correction. VerifyDemo.java: read committed assessments and check the expected correction. Inspect.java: print persisted-state counts used by scripts/restart-check.sh and scripts/crash-check.sh. BronzeTest.java: provenance fields, source-system fallback, replay without duplicates, repeated payloads as evidence, and appending to a Bronze table from before the provenance columns. ModelTest.java: six real Spark tests for correction/deduplication, interval union, invalid/conflicting contracts, published examples, per-rule contract violations, and formatting-insensitive conflict detection.

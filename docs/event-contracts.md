@@ -11,7 +11,9 @@ Contract for every record value on the four cold-chain topics. Machine-readable 
 | coldchain.specifications | SPEC | Quality assurance (approved storage conditions) | eventId |
 | coldchain.inventory | INVENTORY | Warehouse management system | eventId |
 
-The owners are roles until named systems and contacts are agreed with each organization. Only the owner publishes, corrects or revises events on its topic. A kind arriving on any other topic is invalid. Processing does not depend on Kafka key ordering, because revisions are resolved by number and not by arrival order.
+The owners are roles until named systems and contacts are agreed with each organization.
+
+**Source-system identity.** Producers should set the Kafka header `source-system` to a stable name for the producing system (for example `gateway-eu-3`). Bronze stores it as `sourceSystem` with `sourceSystemDeclared = true`. If the header is missing or blank, Bronze records the topic's owner role instead (`sensor-gateway`, `traceability`, `quality-assurance` or `warehouse-management`) with `sourceSystemDeclared = false`. The header is recorded as provenance and not checked against the topic owner. It is not part of the semantic payload hash. Only the owner publishes, corrects or revises events on its topic. A kind arriving on any other topic is invalid. Processing does not depend on Kafka key ordering, because revisions are resolved by number and not by arrival order.
 
 ## Common fields (all kinds)
 

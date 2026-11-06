@@ -19,19 +19,40 @@ public final class Pipeline {
   if(!DeltaTable.isDeltaTable(s,path)) data.write().format("delta").mode("overwrite").save(path);
   else DeltaTable.forPath(s,path).as("t").merge(data.as("s"),condition).whenNotMatched().insertAll().execute();
  }
+ // Owner role per topic (docs/event-contracts.md), used when a record does not declare its source system.
+ static final String OWNER="CASE topic WHEN 'coldchain.sensors' THEN 'sensor-gateway' WHEN 'coldchain.traceability' THEN 'traceability' "
+  +"WHEN 'coldchain.specifications' THEN 'quality-assurance' WHEN 'coldchain.inventory' THEN 'warehouse-management' END";
+ public static Dataset<Row> bronze(Dataset<Row> batch,long id) {
+  return batch.selectExpr("topic","partition","offset","timestamp AS kafkaTime","CAST(key AS STRING) kafkaKey","CAST(value AS STRING) raw",
+    "nullif(trim(CAST(element_at(filter(headers,h->h.key='source-system'),1).value AS STRING)),'') declared")
+   .withColumn("sourceSystem",coalesce(col("declared"),expr(OWNER)))
+   .withColumn("sourceSystemDeclared",col("declared").isNotNull())
+   .withColumn("ingestedAt",current_timestamp()).withColumn("ingestBatchId",lit(id)).drop("declared");
+ }
+ // Insert-only on source coordinates: a replayed offset keeps its first ingestedAt and ingestBatchId.
+ // Schema evolution lets Bronze written before provenance columns existed take new rows; old rows keep nulls.
+ public static void ingest(Dataset<Row> batch,long id,String path) {
+  SparkSession s=batch.sparkSession();Dataset<Row> data=bronze(batch,id);
+  if(!DeltaTable.isDeltaTable(s,path)) data.write().format("delta").mode("overwrite").save(path);
+  else DeltaTable.forPath(s,path).as("t").merge(data.as("s"),"t.topic=s.topic AND t.partition=s.partition AND t.offset=s.offset")
+   .whenNotMatched().insertAll().withSchemaEvolution().execute();
+ }
  static void snapshot(Dataset<Row> data,String path) {
   data.write().format("delta").mode("overwrite").option("overwriteSchema",true).save(path);
  }
  public static void process(Dataset<Row> batch,long id) {
   if(batch.isEmpty())return;
   SparkSession s=batch.sparkSession();
-  Dataset<Row> raw=batch.selectExpr("topic","partition","offset","timestamp AS kafkaTime","CAST(value AS STRING) raw");
-  merge(s,raw,DATA+"/bronze/events","t.topic=s.topic AND t.partition=s.partition AND t.offset=s.offset");
+  ingest(batch,id,DATA+"/bronze/events");
+  // Fault injection for scripts/crash-check.sh: die after the Bronze commit, before Spark records the batch as done.
+  if(String.valueOf(id).equals(System.getenv("FAIL_AFTER_BRONZE_BATCH"))) {
+   System.out.println("INJECTED FAILURE after Bronze batch="+id);System.out.flush();Runtime.getRuntime().halt(1);
+  }
   // Rebuild from durable evidence, so late arrivals and higher revisions revise past exposure.
   Dataset<Row> parsed=Model.parse(s.read().format("delta").load(DATA+"/bronze/events")).cache();
   Dataset<Row> good=parsed.filter("valid");
   Dataset<Row> conflicts=Model.conflicts(good);
-  snapshot(parsed.filter("NOT valid").select("topic","partition","offset","kafkaTime","raw")
+  snapshot(parsed.filter("NOT valid").select("topic","partition","offset","kafkaTime","sourceSystem","ingestedAt","raw")
    .withColumn("error",lit("INVALID_CONTRACT")),DATA+"/silver/quarantine");
   snapshot(conflicts,DATA+"/silver/conflicting_ids");
   Dataset<Row> canonical=Model.canonical(good);
@@ -51,7 +72,7 @@ public final class Pipeline {
   SparkSession s=session("Cold-chain medallion pipeline");
   s.readStream().format("kafka").option("kafka.bootstrap.servers",System.getenv().getOrDefault("KAFKA_BOOTSTRAP","kafka:9092"))
    .option("subscribe","coldchain.sensors,coldchain.traceability,coldchain.inventory,coldchain.specifications")
-   .option("startingOffsets","earliest").option("failOnDataLoss",true).option("maxOffsetsPerTrigger",5000).load()
+   .option("startingOffsets","earliest").option("includeHeaders",true).option("failOnDataLoss",true).option("maxOffsetsPerTrigger",5000).load()
    .writeStream().option("checkpointLocation",DATA+"/checkpoints/medallion")
    .trigger(Trigger.ProcessingTime("5 seconds"))
    .foreachBatch((VoidFunction2<Dataset<Row>,Long>)Pipeline::process).start().awaitTermination();
