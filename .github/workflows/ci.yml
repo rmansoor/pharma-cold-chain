@@ -18,7 +18,7 @@ jobs:
       - name: Secret scan (source and history)
         run: docker run --rm -v "$PWD":/repo zricethezav/gitleaks:v8.24.3 git /repo --no-banner
   runtime:
-    name: Fresh Compose deployment, demo and restart
+    name: Fresh Compose deployment, demo, restart and crash
     needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -28,7 +28,13 @@ jobs:
       - run: docker compose --profile demo run --rm simulator
       - run: docker compose --profile demo run --rm verify
       - run: scripts/restart-check.sh pharma-cold-chain
+      - name: Crash after Bronze commit, then replay
+        run: docker compose down -v && scripts/crash-check.sh
       - if: failure()
-        run: docker compose logs --no-color --tail 200
+        run: |
+          docker compose logs --no-color --tail 200
+          docker compose -p pharma-cold-chain-crash logs --no-color --tail 200
       - if: always()
-        run: docker compose down -v
+        run: |
+          docker compose down -v
+          docker compose -p pharma-cold-chain-crash --profile demo down -v

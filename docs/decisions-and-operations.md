@@ -43,6 +43,7 @@ docker compose logs -f pipeline
 docker compose restart pipeline
 docker compose down
 scripts/restart-check.sh   # after the demo: full down/up, then one new event
+scripts/crash-check.sh     # disposable project: crash after Bronze commit, then replay
 ```
 
 `scripts/restart-check.sh [project]` checks that persisted state survives a full `down`/`up`: counts must be unchanged with no new input, and one new event must add exactly one Bronze row and continue the snapshot sequence. CI (`.github/workflows/ci.yml`) runs the Spark tests, a gitleaks scan of source and history, then a fresh Compose deployment, the demo and the restart check on every pull request and every push to main. Images contain only the application jar, runtime libraries and the OS CA bundle; no credentials are used or stored.
@@ -57,7 +58,7 @@ scripts/restart-check.sh   # after the demo: full down/up, then one new event
 | Invalid JSON | Bronze retains input; quarantine records contract failure | Assert source coordinates and raw evidence |
 | Higher revision arrives late | Supersede prior canonical event and rebuild assessments | Assert old product loses exposure, new product gains it |
 | Conflicting same revision | Block ID; expose conflicting_ids; retain raw evidence | Assert no arbitrary winner |
-| Crash after Bronze | Resume batch using checkpoint; source-coordinate MERGE idempotent | Fault-injection integration test |
+| Crash after Bronze | Resume batch using checkpoint; source-coordinate MERGE idempotent | scripts/crash-check.sh (run in CI) |
 | Crash after history, before manifest | Ignore unpublished snapshot; retry then commit | Fault-injection reader test |
 | Expired Kafka offsets | failOnDataLoss=true fails visibly | Backfill plan and broker retention test |
 | Lost local volumes | Demo has no replicated recovery | Backups/shared storage are production work |
@@ -75,7 +76,7 @@ Candidate engineering objectives to negotiate: publication within 60 seconds at 
 
 ## Test strategy and current evidence
 
-Six local Spark tests pass (2026-11-05, SID-13): revision changes exposure A->B while duplicates remain bounded; overlapping readings use interval union; malformed/conflicting contracts are excluded; every published contract example is valid; 22 single-rule violations (blank identifiers, revision, kind/status enums, interval bounds, subsecond bounds, future readings, NaN/infinite values, wrong topic, malformed JSON) are rejected; reformatted retries do not conflict while a changed payload or a reused ID across kinds does. Real-broker evidence (2026-11-05, SID-14): two runs from empty volumes passed the demo verifier and the restart check. CI repeats both on every change. No fault-injection (mid-batch crash) result is recorded yet; that belongs to SID-15 and SID-28.
+Six local Spark tests pass (2026-11-05, SID-13): revision changes exposure A->B while duplicates remain bounded; overlapping readings use interval union; malformed/conflicting contracts are excluded; every published contract example is valid; 22 single-rule violations (blank identifiers, revision, kind/status enums, interval bounds, subsecond bounds, future readings, NaN/infinite values, wrong topic, malformed JSON) are rejected; reformatted retries do not conflict while a changed payload or a reused ID across kinds does. Real-broker evidence (2026-11-05, SID-14): two runs from empty volumes passed the demo verifier and the restart check. CI repeats both on every change. Fault injection (2026-11-05, SID-15): scripts/crash-check.sh halts the pipeline after the Bronze commit of batch 0 (5 Bronze rows, no Gold commit). After restart, batch 0 is replayed and committed as snapshot 0 with exactly 5 Bronze rows. BronzeTest adds 3 Spark tests for provenance and idempotency, bringing the total to 9. Crashes at other points (after Silver, after Gold history) are not yet injected; that belongs to SID-28.
 
 Required tests: half-open boundaries; multiple disjoint placements; nested splits; zero coverage; partial coverage; safe full coverage; exact threshold; non-finite temperature; incompatible topics; missing/overlapping specifications; simultaneous assignments; sensor calibration; equal-time inventory changes; product removal; snapshot retry; reader during partial write; new lineage replay; load/skew/backlog recovery; access-denial paths.
 
