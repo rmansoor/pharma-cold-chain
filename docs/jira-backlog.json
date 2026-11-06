@@ -1,0 +1,384 @@
+{
+  "epic": {
+    "localId": "CC-EPIC",
+    "project": "SID",
+    "issueType": "Epic",
+    "summary": "Cold-chain intelligence: traceable medallion pipeline and revised exposure assessments",
+    "description": "Build a Java/Kafka/Spark/Delta Lake pipeline that traces serialized pharmaceutical products through time-varying containers and sensor assignments, evaluates synthetic exposure rules, locates affected inventory, and publishes reproducible revised assessments for authorized quality review.\n\nScope: governed contracts; Bronze evidence; Silver temporal lineage and quality; Gold exposure/uncertainty; committed publication; late-correction impact processing; inventory queries; idempotent alerts; operational/security controls; verification.\n\nNon-goals: clinical suitability determination, automatic recall/product release, patient record ingestion, production compliance certification. A local prototype already has three passing Spark tests; that is not production acceptance.\n\nEpic acceptance: a run-scoped scenario with duplicate and late evidence plus a corrected sensor assignment moves the review from the formerly linked product to the correctly linked product, retains prior published evidence, locates affected inventory, and handles missing coverage explicitly. Publication/recovery/permission tests and measured operating limits must pass.\n\nDesign package: architecture.md, detailed-design.md, decisions-and-operations.md, delivery-backlog.md. Publication/attachment of these docs to Jira is recorded separately; local paths are not shared URLs. All children remain backlog until acceptance is verified.",
+    "labels": [
+      "cold-chain",
+      "medallion",
+      "data-engineering"
+    ],
+    "jiraKey": "SID-12"
+  },
+  "stories": [
+    {
+      "localId": "CC-01",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Define governed event contracts and identity rules",
+      "description": "As a source integrator, I need explicit versioned contracts so incompatible evidence is caught before promotion.\n\nScope: Data foundation\n\nAcceptance criteria:\n1. Publish schemas and examples for all five event kinds and the four topic mappings, including units, half-open UTC intervals and source ownership.\n2. Validate nonblank identifiers, monotonic revision semantics, interval bounds and finite values; add positive and negative contract tests.\n3. Canonical semantic payload hashes distinguish real conflicts from JSON formatting differences.\n\nDependencies (planning IDs): None\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Foundation",
+      "jiraKey": "SID-13",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": []
+    },
+    {
+      "localId": "CC-02",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Provision reproducible Kafka and Delta development runtime",
+      "description": "As an engineer, I need an isolated reproducible runtime to develop and verify the pipeline.\n\nScope: Platform\n\nAcceptance criteria:\n1. A fresh Compose deployment starts the broker, four topics and a Java 17 Spark/Delta application with nonconflicting host ports.\n2. Persist evidence and checkpoints across restart; pin compatible versions and document resource requirements.\n3. Build and transformation tests run in CI; secrets are absent from images and source.\n\nDependencies (planning IDs): CC-01\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-01"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Foundation",
+      "jiraKey": "SID-14",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-13"
+      ]
+    },
+    {
+      "localId": "CC-03",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Implement idempotent Bronze ingestion with source provenance",
+      "description": "As an investigator, I need original source evidence retained for correction and replay.\n\nScope: Bronze\n\nAcceptance criteria:\n1. Preserve raw payload, topic, partition, offset, broker timestamp, ingestion timestamp and source-system identity.\n2. Reprocessing the same source offset creates no duplicate Bronze key; repeated payload at a new offset remains evidence.\n3. Restart and fail-after-write tests demonstrate resumable ingestion without silent offset loss.\n\nDependencies (planning IDs): CC-01, CC-02\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-01",
+        "CC-02"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Foundation",
+      "jiraKey": "SID-15",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-13",
+        "SID-14"
+      ]
+    },
+    {
+      "localId": "CC-04",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Implement Silver validation and conflict quarantine",
+      "description": "As a data steward, I need actionable quarantine and conflict evidence.\n\nScope: Silver\n\nAcceptance criteria:\n1. Invalid records carry reason codes, source coordinates and raw references; no invalid contract enters canonical Silver.\n2. Competing same-ID/revision contracts produce a conflict case and never select an arbitrary winner.\n3. Add corrected-event reprocessing and resolution rules with auditable outcomes.\n\nDependencies (planning IDs): CC-03\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-03"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Foundation",
+      "jiraKey": "SID-16",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-15"
+      ]
+    },
+    {
+      "localId": "CC-05",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Build versioned product and container lineage",
+      "description": "As an investigator, I need product location within changing packaging over time.\n\nScope: Traceability\n\nAcceptance criteria:\n1. Materialize product, carton and pallet membership intervals with source ID/revision and effective time.\n2. Handle split, merge and repack events; detect cycles, contradictory parents and overlapping impossible placements.\n3. A boundary test identifies the exact affected serialized units before and after a pallet split.\n\nDependencies (planning IDs): CC-04\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-04"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Domain and exposure",
+      "jiraKey": "SID-17",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-16"
+      ]
+    },
+    {
+      "localId": "CC-06",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Reconstruct sensor assignments and custody timelines",
+      "description": "As a quality analyst, I need reliable sensor-to-container and custody associations.\n\nScope: Traceability\n\nAcceptance criteria:\n1. Persist revisioned assignment/custody intervals and link provenance to each temporal edge.\n2. A correction invalidates both the former and revised product mappings; ambiguity is visible rather than silently resolved.\n3. Cover late events, simultaneous assignments, missing custody and equal-time transitions in tests.\n\nDependencies (planning IDs): CC-04, CC-05\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-04",
+        "CC-05"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Domain and exposure",
+      "jiraKey": "SID-18",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-16",
+        "SID-17"
+      ]
+    },
+    {
+      "localId": "CC-07",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Govern temporal product specifications and measurement quality",
+      "description": "As a quality owner, I need approved product rules and trustworthy measurements.\n\nScope: Risk data\n\nAcceptance criteria:\n1. Version specifications by effective interval and product; reject or explicitly resolve overlaps with documented precedence.\n2. Normalize supported temperature units and expose calibration validity, sampling gaps and measurement uncertainty.\n3. Never extend a point observation into an unsupported interval; use synthetic thresholds only in demos.\n\nDependencies (planning IDs): CC-01, CC-04\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-01",
+        "CC-04"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Domain and exposure",
+      "jiraKey": "SID-19",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-13",
+        "SID-16"
+      ]
+    },
+    {
+      "localId": "CC-08",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Compute traceable exposure intervals without double counting",
+      "description": "As an analyst, I need correct exposure duration for each product and assessment scope.\n\nScope: Exposure engine\n\nAcceptance criteria:\n1. Intersect placement, assignment, reading and specification validity using half-open interval boundaries.\n2. Union overlapping coverage and excursion intervals before summing; duplicates and sensor overlap cannot inflate seconds.\n3. Persist interval evidence with exact source revisions; verify boundary, overlap, gap and split cases.\n\nDependencies (planning IDs): CC-05, CC-06, CC-07\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-05",
+        "CC-06",
+        "CC-07"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Domain and exposure",
+      "jiraKey": "SID-20",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-17",
+        "SID-18",
+        "SID-19"
+      ]
+    },
+    {
+      "localId": "CC-09",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Implement explicit uncertainty and product assessment policy",
+      "description": "As a quality reviewer, I need evidence-based outcomes that preserve uncertainty.\n\nScope: Exposure engine\n\nAcceptance criteria:\n1. Define review, insufficient-data and no-observed-excursion states without implying product release approval.\n2. Expose missing coverage, ambiguous lineage/specification and stale inventory independently of the primary outcome.\n3. Version rules and assessment scope; test exact threshold, partial coverage and mixed specification periods.\n\nDependencies (planning IDs): CC-08\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-08"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Domain and exposure",
+      "jiraKey": "SID-21",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-20"
+      ]
+    },
+    {
+      "localId": "CC-10",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Publish atomic consumer-visible Gold snapshots and provenance",
+      "description": "As a consumer, I need a consistent complete assessment snapshot.\n\nScope: Gold\n\nAcceptance criteria:\n1. Publish assessment history before a manifest and require readers to pin one committed snapshot.\n2. Include lineage/run identity, source high-watermarks, input table versions, rule version and evidence revisions.\n3. Fault-injection tests prove retries are idempotent and partially written snapshots remain invisible.\n\nDependencies (planning IDs): CC-09\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-09"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Delivery and hardening",
+      "jiraKey": "SID-22",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-21"
+      ]
+    },
+    {
+      "localId": "CC-11",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Implement affected-product incremental recomputation and replay",
+      "description": "As an operator, I need late corrections processed without full-history scans.\n\nScope: Corrections\n\nAcceptance criteria:\n1. Compute impact from old and new assignment/placement/specification values and reevaluate all affected scopes.\n2. Incremental output matches the full-recomputation reference over the same source history.\n3. Isolate replay namespaces and retain revision history; measure correction latency at agreed scale.\n\nDependencies (planning IDs): CC-08, CC-10\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-08",
+        "CC-10"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Delivery and hardening",
+      "jiraKey": "SID-23",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-20",
+        "SID-22"
+      ]
+    },
+    {
+      "localId": "CC-12",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Serve affected inventory and recipient impact queries",
+      "description": "As an investigator, I need to find affected stock and downstream recipients.\n\nScope: Serving\n\nAcceptance criteria:\n1. Expose committed-snapshot queries by product, lot, shipment, location and recipient with full assessment evidence.\n2. Carry latest-known location, inventory timestamp and staleness; enforce scoped read access.\n3. Pagination and filters produce consistent results under concurrent publication; no patient identity is required.\n\nDependencies (planning IDs): CC-10\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-10"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Delivery and hardening",
+      "jiraKey": "SID-24",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-22"
+      ]
+    },
+    {
+      "localId": "CC-13",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Deliver idempotent investigation alerts and revisions",
+      "description": "As a reviewer, I need new and revised investigation items without duplicate notifications.\n\nScope: Integration\n\nAcceptance criteria:\n1. Use a transactional publication/outbox or equivalent durable handoff keyed by assessment revision.\n2. Emit new, revised and withdrawn review items with reason and evidence references.\n3. Retry and consumer-restart tests prove no lost publication and idempotent case-store updates.\n\nDependencies (planning IDs): CC-10, CC-12\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-10",
+        "CC-12"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Delivery and hardening",
+      "jiraKey": "SID-25",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-22",
+        "SID-24"
+      ]
+    },
+    {
+      "localId": "CC-14",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Add operational metrics, dashboards and incident runbooks",
+      "description": "As an operator, I need to detect backlog, stale publication and data-quality failures.\n\nScope: Operations\n\nAcceptance criteria:\n1. Expose backlog, batch runtime, commit age, conflict/quarantine rates, missing coverage, state/storage growth and revision counts.\n2. Alert on a stalled manifest even when the process remains running; define proposed SLOs with measured baselines.\n3. Publish triage, replay, checkpoint migration, storage and recovery runbooks with evidence from a drill.\n\nDependencies (planning IDs): CC-03, CC-10\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-03",
+        "CC-10"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Delivery and hardening",
+      "jiraKey": "SID-26",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-15",
+        "SID-22"
+      ]
+    },
+    {
+      "localId": "CC-15",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Implement access controls, retention and audit safeguards",
+      "description": "As a platform owner, I need controlled evidence access and governed retention.\n\nScope: Security\n\nAcceptance criteria:\n1. Implement TLS/SASL, least-privilege topic/storage permissions and managed secret handling for the chosen deployment.\n2. Audit reads, replays, rule changes and retention actions; separate operational and quality approval roles.\n3. Document domain-approved retention and deletion policy and verify unauthorized access is denied.\n\nDependencies (planning IDs): CC-02, CC-03\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-02",
+        "CC-03"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Delivery and hardening",
+      "jiraKey": "SID-27",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-14",
+        "SID-15"
+      ]
+    },
+    {
+      "localId": "CC-16",
+      "project": "SID",
+      "issueType": "Story",
+      "summary": "[Cold Chain] Build run-scoped integration, recovery and performance verification",
+      "description": "As a delivery owner, I need trustworthy evidence of correctness and operating limits.\n\nScope: Verification\n\nAcceptance criteria:\n1. Run the full Kafka-to-Gold correction scenario with unique run IDs and committed-snapshot acknowledgement, replacing timing sleeps.\n2. Cover duplicate/conflict/late data, nested split, threshold/gap, restart and partial-publication failures; old retained results cannot satisfy a new run.\n3. Publish throughput, tail latency, correction time, skew and recovery measurements against agreed targets with known limitations.\n\nDependencies (planning IDs): CC-10, CC-11, CC-12, CC-14, CC-15\n\nDefinition of done: code reviewed; meaningful tests pass; design/runbook updated; evidence recorded; limitations explicit. Prototype coverage does not by itself close this story.",
+      "parentLocalId": "CC-EPIC",
+      "dependencies": [
+        "CC-10",
+        "CC-11",
+        "CC-12",
+        "CC-14",
+        "CC-15"
+      ],
+      "labels": [
+        "cold-chain",
+        "medallion"
+      ],
+      "phase": "Delivery and hardening",
+      "jiraKey": "SID-28",
+      "parentJiraKey": "SID-12",
+      "dependencyJiraKeys": [
+        "SID-22",
+        "SID-23",
+        "SID-24",
+        "SID-26",
+        "SID-27"
+      ]
+    }
+  ],
+  "publication": {
+    "status": "created",
+    "createdAt": "2026-11-05",
+    "project": "SID (SIDEBUSINESS)",
+    "site": "https://ramaizmansoor.atlassian.net",
+    "epic": "SID-12",
+    "stories": "SID-13..SID-28",
+    "links": "Blocks links created for every listed dependency (28)"
+  }
+}
