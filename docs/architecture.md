@@ -24,7 +24,9 @@ flowchart TD
   B --> V[Validate topic and event contracts]
   V --> Q[(Silver: quarantine)]
   V --> C[Detect conflicting event ID / revision payloads]
-  C --> CQ[(Silver: conflicting IDs)]
+  C --> CQ[(Silver: conflict cases)]
+  Q --> L[(Silver: case log)]
+  CQ --> L
   C --> E[(Silver: latest valid event revision)]
   E --> J[Temporal intersection of placement, assignment, reading and specification]
   J --> U[Union intervals; compute coverage and excursion seconds]
@@ -75,8 +77,8 @@ Proposed: managed Spark executors, shared object storage, replicated Kafka, vers
 
 1. Ingest raw JSON from four Kafka topics; preserve source coordinates and broker timestamps.
 2. Merge raw records into Bronze before applying business interpretation.
-3. Validate event-specific fields and expected topic; persist invalid source records to quarantine.
-4. Detect any conflicting payload for an event ID/revision; block the entire ID pending resolution. Preserve all source evidence in Bronze.
+3. Validate event-specific fields and expected topic; persist invalid source records to quarantine with a reason code for every broken rule.
+4. Open a conflict case for any competing payload for an event ID/revision, or an ID reused across kinds; block the entire ID while a case is open. A higher revision from the source resolves a payload conflict. Record each case's opening and resolution in the case log. Preserve all source evidence in Bronze.
 5. Select the highest valid revision for each non-conflicting event ID. A correction retains the ID and increments revision.
 6. Materialize canonical Silver events, then read that persisted snapshot for assessment calculations.
 7. Intersect product placement, sensor/container assignment, measured interval and product specification validity.

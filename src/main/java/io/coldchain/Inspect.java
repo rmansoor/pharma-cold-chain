@@ -16,7 +16,8 @@ public final class Inspect {
    +" declared="+(Arrays.asList(bronze.columns()).contains("sourceSystemDeclared")?bronze.filter("sourceSystemDeclared").count():0)
    +" history="+(gold?s.read().format("delta").load(base+"/gold/assessment_history").count():0)
    +" commits="+(gold?c.getLong(1):0)+" lastSnapshot="+(gold?c.getLong(0):-1)
-   +" quarantine="+(gold?s.read().format("delta").load(base+"/silver/quarantine").count():0));
+   +" quarantine="+(gold?s.read().format("delta").load(base+"/silver/quarantine").count():0)
+   +" caseLog="+(DeltaTable.isDeltaTable(s,base+"/silver/case_log")?s.read().format("delta").load(base+"/silver/case_log").count():0));
   s.stop();
  }
 }

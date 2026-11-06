@@ -9,12 +9,13 @@ class ModelTest {
  @BeforeAll static void start(){s=Pipeline.session("cold-chain-tests");s.sparkContext().setLogLevel("ERROR");}
  @AfterAll static void stop(){s.stop();}
  static final String TOPIC="CASE get_json_object(raw,'$.kind') WHEN 'READING' THEN 'coldchain.sensors' WHEN 'SPEC' THEN 'coldchain.specifications' WHEN 'INVENTORY' THEN 'coldchain.inventory' ELSE 'coldchain.traceability' END";
- Dataset<Row> parseRaw(List<String> json,Column topic) {
-  Dataset<Row> raw=s.createDataset(json,Encoders.STRING()).toDF("raw").withColumn("topic",topic)
-   .withColumn("kafkaTime",current_timestamp()).withColumn("partition",lit(0)).withColumn("offset",monotonically_increasing_id());
+ static Dataset<Row> parseRaw(List<String> json,Column topic) {
+  Dataset<Row> raw=SparkSession.active().createDataset(json,Encoders.STRING()).toDF("raw").withColumn("topic",topic)
+   .withColumn("kafkaTime",current_timestamp()).withColumn("partition",lit(0)).withColumn("offset",monotonically_increasing_id())
+   .withColumn("sourceSystem",lit("test")).withColumn("ingestedAt",current_timestamp());
   return Model.parse(raw);
  }
- Dataset<Row> parse(List<Map<String,Object>> input)throws Exception {
+ static Dataset<Row> parse(List<Map<String,Object>> input)throws Exception {
   List<String> json=new ArrayList<>();for(var e:input)json.add(Simulator.JSON.writeValueAsString(e));
   return parseRaw(json,expr(TOPIC));
  }
@@ -51,34 +52,47 @@ class ModelTest {
   assertEquals(Set.of("READING","PLACEMENT","ASSIGNMENT","SPEC","INVENTORY"),
    new HashSet<>(parsed.select("kind").as(Encoders.STRING()).collectAsList()));
  }
- @Test void contractViolationsAreInvalid()throws Exception {
+ List<String> reasons(String json,Column topic){Row r=parseRaw(List.of(json),topic).first();return r.getList(r.fieldIndex("reasons"));}
+ @Test void contractViolationsAreInvalidWithReasonCodes()throws Exception {
   // Indexes into Simulator.initial(): 0 spec, 1 placement, 3 assignment, 4 inventory, 6 reading.
-  Map<String,Map<String,Object>> cases=new LinkedHashMap<>();
-  cases.put("blank eventId",with(6,"eventId","  "));
-  cases.put("blank containerId",with(3,"containerId",""));
-  cases.put("blank lotId",with(1,"lotId"," "));
-  cases.put("blank location",with(4,"location","\t"));
-  cases.put("revision zero",with(6,"revision",0));
-  cases.put("fractional revision",with(6,"revision",1.5));
-  cases.put("unknown kind",with(6,"kind","TELEMETRY"));
-  cases.put("unknown status",with(4,"status","LOST"));
-  cases.put("empty interval",with(6,"endTime","2026-01-01T12:00:00Z"));
-  cases.put("reversed interval",with(1,"startTime","2026-01-01T12:20:00Z"));
-  cases.put("missing endTime",with(3,"endTime",null));
-  cases.put("subsecond bound",with(6,"startTime","2026-01-01T12:00:00.500Z"));
-  cases.put("reading ends in future",with(6,"endTime","2099-01-01T00:00:00Z"));
-  cases.put("event time in future",with(4,"eventTime","2099-01-01T00:00:00Z"));
-  cases.put("temperature out of range",with(6,"temperatureC",150.0));
-  cases.put("inverted spec",with(0,"minC",9.0));
-  cases.put("negative allowance",with(0,"maxExcursionSeconds",-1));
-  for(var c:cases.entrySet())assertFalse(valid(Simulator.JSON.writeValueAsString(c.getValue())),c.getKey());
   String reading=Simulator.JSON.writeValueAsString(Simulator.initial().get(6)),spec=Simulator.JSON.writeValueAsString(Simulator.initial().get(0));
-  assertTrue(valid(reading));assertTrue(valid(spec));
-  assertFalse(valid(reading.replace("12.0","NaN")),"NaN temperature");
-  assertFalse(valid(spec.replace("8.0","Infinity")),"infinite maxC");
-  assertFalse(valid(spec.replace("2.0","-Infinity")),"infinite minC");
-  assertFalse(valid("{broken"),"malformed JSON");
-  assertFalse((boolean)parseRaw(List.of(reading),lit("coldchain.traceability")).first().getAs("valid"),"reading on wrong topic");
+  Map<String,Object[]> cases=new LinkedHashMap<>();
+  cases.put("blank eventId",new Object[]{with(6,"eventId","  "),"INVALID_ID:eventId"});
+  cases.put("blank containerId",new Object[]{with(3,"containerId",""),"INVALID_ID:containerId"});
+  cases.put("blank lotId",new Object[]{with(1,"lotId"," "),"INVALID_ID:lotId"});
+  cases.put("blank location",new Object[]{with(4,"location","\t"),"INVALID_ID:location"});
+  cases.put("revision zero",new Object[]{with(6,"revision",0),"INVALID_REVISION"});
+  cases.put("fractional revision",new Object[]{with(6,"revision",1.5),"INVALID_REVISION"});
+  cases.put("unknown kind",new Object[]{with(6,"kind","TELEMETRY"),"INVALID_KIND"});
+  cases.put("unknown status",new Object[]{with(4,"status","LOST"),"INVALID_STATUS"});
+  cases.put("empty interval",new Object[]{with(6,"endTime","2026-01-01T12:00:00Z"),"INVALID_INTERVAL"});
+  cases.put("reversed interval",new Object[]{with(1,"startTime","2026-01-01T12:20:00Z"),"INVALID_INTERVAL"});
+  cases.put("missing endTime",new Object[]{with(3,"endTime",null),"INVALID_INTERVAL"});
+  cases.put("subsecond bound",new Object[]{with(6,"startTime","2026-01-01T12:00:00.500Z"),"FRACTIONAL_SECONDS"});
+  cases.put("reading ends in future",new Object[]{with(6,"endTime","2099-01-01T00:00:00Z"),"READING_ENDS_AHEAD_OF_KAFKA"});
+  cases.put("event time in future",new Object[]{with(4,"eventTime","2099-01-01T00:00:00Z"),"EVENT_TIME_AHEAD_OF_KAFKA"});
+  cases.put("missing eventTime",new Object[]{with(4,"eventTime",null),"MISSING_EVENT_TIME"});
+  cases.put("unparseable eventTime",new Object[]{with(4,"eventTime","yesterday"),"MISSING_EVENT_TIME"});
+  cases.put("revision as text",new Object[]{with(6,"revision","two"),"INVALID_REVISION"});
+  cases.put("temperature out of range",new Object[]{with(6,"temperatureC",150.0),"OUT_OF_RANGE:temperatureC"});
+  cases.put("inverted spec",new Object[]{with(0,"minC",9.0),"SPEC_MIN_ABOVE_MAX"});
+  cases.put("negative allowance",new Object[]{with(0,"maxExcursionSeconds",-1),"INVALID_EXCURSION_ALLOWANCE"});
+  // NaN and Infinity are not JSON (RFC 8259), although Spark's lenient from_json would read them.
+  cases.put("NaN temperature",new Object[]{reading.replace("12.0","NaN"),"MALFORMED_JSON"});
+  cases.put("infinite maxC",new Object[]{spec.replace("8.0","Infinity"),"MALFORMED_JSON"});
+  cases.put("infinite minC",new Object[]{spec.replace("2.0","-Infinity"),"MALFORMED_JSON"});
+  cases.put("single-quoted JSON",new Object[]{reading.replace('"','\''),"MALFORMED_JSON"});
+  cases.put("malformed JSON",new Object[]{"{broken","MALFORMED_JSON"});
+  cases.put("JSON array",new Object[]{"[1,2]","MALFORMED_JSON"});
+  for(var c:cases.entrySet()) {
+   Object event=c.getValue()[0];String json=event instanceof String t?t:Simulator.JSON.writeValueAsString(event);
+   assertEquals(List.of(c.getValue()[1]),reasons(json,expr(TOPIC)),c.getKey());
+  }
+  assertEquals(List.of(),reasons(reading,expr(TOPIC)));assertEquals(List.of(),reasons(spec,expr(TOPIC)));
+  assertEquals(List.of("WRONG_TOPIC"),reasons(reading,lit("coldchain.traceability")),"reading on wrong topic");
+  // Independent faults are all reported.
+  assertEquals(List.of("INVALID_REVISION","INVALID_ID:sensorId","OUT_OF_RANGE:temperatureC"),
+   reasons(Simulator.JSON.writeValueAsString(with(6,"revision",0,"sensorId","","temperatureC",-273.0)),expr(TOPIC)));
  }
  @Test void formattingDoesNotConflictButMeaningDoes()throws Exception {
   List<Map<String,Object>> input=new ArrayList<>(Simulator.initial());

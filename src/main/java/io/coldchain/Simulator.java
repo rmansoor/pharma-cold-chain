@@ -37,12 +37,17 @@ public final class Simulator {
    Map<String,Object> reading=initial().get(6);
    producer.send(record("coldchain.sensors","reading-hot",JSON.writeValueAsString(reading))).get();
    producer.send(record("coldchain.sensors","bad","{broken")).get();
+   // Two different payloads for one ID and revision open a conflict case. UNIT-C has no placement, so Gold is unaffected.
+   for(String status:List.of("IN_STOCK","DISPATCHED"))
+    producer.send(record("coldchain.inventory","inventory-C",JSON.writeValueAsString(event("inventory-C","INVENTORY","productId","UNIT-C","location","WAREHOUSE-1","status",status)))).get();
    producer.flush();System.out.println("Initial: UNIT-A quality review; UNIT-B insufficient data. Waiting 40s for initial snapshot.");
    Thread.sleep(40000);
    Map<String,Object> correction=new LinkedHashMap<>(initial().get(3));
    correction.put("revision",2);correction.put("containerId","BOX-B");
    producer.send(record("coldchain.traceability","assign",JSON.writeValueAsString(correction))).get();
-   System.out.println("Correction sent: sensor was in BOX-B. UNIT-B must become QUALITY_REVIEW; UNIT-A INSUFFICIENT_DATA.");
+   Map<String,Object> settled=event("inventory-C","INVENTORY","productId","UNIT-C","location","WAREHOUSE-1","status","DISPATCHED");settled.put("revision",2);
+   producer.send(record("coldchain.inventory","inventory-C",JSON.writeValueAsString(settled))).get();
+   System.out.println("Correction sent: sensor was in BOX-B; inventory-C revision 2 resolves its conflict. UNIT-B must become QUALITY_REVIEW; UNIT-A INSUFFICIENT_DATA.");
   }
  }
 }
