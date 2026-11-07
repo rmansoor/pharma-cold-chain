@@ -7,7 +7,7 @@ Contract for every record value on the four cold-chain topics. Machine-readable 
 | Topic | Kinds | Owning source (role) | Kafka key |
 |---|---|---|---|
 | coldchain.sensors | READING | Sensor telemetry gateway | eventId |
-| coldchain.traceability | PLACEMENT, PACKING, ASSIGNMENT | Serialization / packing system (placements and packing), logistics operations (sensor-to-container assignments) | eventId |
+| coldchain.traceability | PLACEMENT, PACKING, ASSIGNMENT, CUSTODY | Serialization / packing system (placements and packing), logistics operations (sensor-to-container assignments and custody) | eventId |
 | coldchain.specifications | SPEC | Quality assurance (approved storage conditions) | eventId |
 | coldchain.inventory | INVENTORY | Warehouse management system | eventId |
 
@@ -21,7 +21,7 @@ The owners are roles until named systems and contacts are agreed with each organ
 |---|---|---|
 | eventId | string | Required and must contain a non-whitespace character. Globally unique across all kinds, and keeps the same kind across revisions. |
 | revision | integer | Required, ≥ 1. |
-| kind | enum | READING, PLACEMENT, PACKING, ASSIGNMENT, SPEC or INVENTORY. |
+| kind | enum | READING, PLACEMENT, PACKING, ASSIGNMENT, CUSTODY, SPEC or INVENTORY. |
 | eventTime | RFC 3339 timestamp | Required. When the source recorded the fact; no more than 5 minutes after the Kafka record timestamp. |
 
 ## Kinds
@@ -31,11 +31,26 @@ The owners are roles until named systems and contacts are agreed with each organ
 | READING | sensorId, startTime, endTime, temperatureC | °C, finite, −100 to 100. The value applies uniformly across [startTime, endTime). endTime is no more than 5 minutes after the Kafka timestamp, so a reading cannot cover the future. |
 | PLACEMENT | productId, productCode, lotId, containerId, startTime, endTime | The serialized unit productId is in containerId during the interval. |
 | ASSIGNMENT | sensorId, containerId, startTime, endTime | The sensor measures that container during the interval. |
+| CUSTODY | containerId, custodianId, startTime, endTime | The custodian (an organization or site) is responsible for the container during the interval. |
 | SPEC | productCode, startTime, endTime, minC, maxC, maxExcursionSeconds | Acceptable range [minC, maxC] in °C, inclusive, finite, −100 to 100, with minC ≤ maxC. maxExcursionSeconds (integer ≥ 0) is the cumulative time out of range allowed before quality review. |
 | INVENTORY | productId, location, status | status is IN_STOCK or DISPATCHED. |
 | PACKING | childId, childLevel, parentId, parentLevel, startTime, endTime; also productCode and lotId when childLevel is UNIT | childId is inside parentId during the interval. childLevel is UNIT, CARTON or PALLET; parentLevel is CARTON, PALLET or CONTAINER and must be above childLevel (UNIT < CARTON < PALLET < CONTAINER). A UNIT childId is the serialized unit's productId. childId and parentId differ. |
 
-Every identifier field (productId, productCode, lotId, containerId, sensorId, location, childId, parentId) must contain a non-whitespace character.
+Every identifier field (productId, productCode, lotId, containerId, sensorId, location, childId, parentId, custodianId) must contain a non-whitespace character.
+
+### Assignments and custody
+
+Each assignment and custody event keeps all of its valid revisions in `silver/timelines`, once per revision with the topic, partition, offset, Kafka time and source system it first arrived with. The highest revision is `current` and is the one used. A correction can arrive before the revision it replaces; revision numbers decide, not arrival order.
+
+| Case | Treatment |
+|---|---|
+| One sensor assigned to two containers at the same instant | SENSOR_IN_TWO_CONTAINERS in `silver/timeline_anomalies`. It is impossible to know which container was measured, so both assignments are left out for their whole interval and the units show missing coverage. |
+| Two sensors assigned to one container | Allowed. Both sensors' readings count; coverage is the union and any out-of-range reading counts as exposure. |
+| Two different custodians for one container at the same instant | CUSTODY_OVERLAP. Both custody events are left out for their whole interval. The same custodian recorded twice is not a contradiction. |
+| A container with no custodian for part of the time a unit is in it | Gold reports it as `missingCustodySeconds`. Custody does not change the exposure assessment. |
+| Handover at one instant (one custody ends when the next starts) | Neither a gap nor an overlap, because intervals are half-open. |
+
+When an assignment revision changes its sensor, container or interval, `silver/mapping_invalidations` lists every unit the **former** revision mapped (side FORMER) and every unit the **revised** one maps (side REVISED), with the window. A revision that changes neither (for example only eventTime) invalidates nothing. Both sides are recomputed in the next Gold snapshot, and earlier assessments remain in history.
 
 ### Packaging lineage
 
@@ -94,6 +109,7 @@ Records that are not valid JSON, or that break any rule above, stay in Bronze as
 | SPEC_MIN_ABOVE_MAX | SPEC | minC is greater than maxC. |
 | INVALID_EXCURSION_ALLOWANCE | SPEC | maxExcursionSeconds is missing, not an integer, or negative. |
 | INVALID_STATUS | INVENTORY | status is missing or not IN_STOCK or DISPATCHED. |
+| INVALID_ID:custodianId | CUSTODY | Missing or blank (containerId is checked as for ASSIGNMENT). |
 | INVALID_ID:childId, :parentId | PACKING | Missing or blank. productCode and lotId are also required (INVALID_ID) when childLevel is UNIT. |
 | INVALID_LEVEL:childLevel, :parentLevel | PACKING | Missing or not an allowed level for that end. |
 | PARENT_NOT_ABOVE_CHILD | PACKING | parentLevel is not above childLevel, for example a pallet in a carton. |
@@ -137,7 +153,7 @@ Adding an optional field or a new enum value is a minor change: update the schem
 
 - There is no manual resolution: a steward cannot yet acknowledge or close a KIND_MISMATCH or an unattributable invalid record. Those stay OPEN.
 - A field with the wrong JSON type is reported under that field's code (for example INVALID_REVISION for `"revision": "two"`), not as a separate type error.
-- Overlapping specifications and simultaneous assignments are valid contracts; resolving them belongs to CC-06 and CC-07.
+- Overlapping specifications are valid contracts; resolving them belongs to CC-07.
 - A membership needs an end time. An open-ended membership ("still on the pallet") has to be sent with a provisional end and revised later.
 - A lineage anomaly excludes every membership involved for its whole interval, not only the overlapping window. There is no steward resolution for anomalies yet; the source has to send corrected revisions.
 - An unknown field is ignored without a warning, so a misspelled optional field is silently lost.

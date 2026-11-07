@@ -30,6 +30,9 @@ flowchart TD
   C --> E[(Silver: latest valid event revision)]
   E --> LIN[Resolve unit → carton → pallet → container lineage]
   LIN --> LA[(Silver: memberships, lineage anomalies, unit containers)]
+  E --> TL[Assignment and custody timelines: revisions, anomalies, invalidations]
+  TL --> TA[(Silver: timelines, timeline anomalies, mapping invalidations)]
+  TL --> J
   LIN --> J[Temporal intersection of resolved placement, assignment, reading and specification]
   J --> U[Union intervals; compute coverage and excursion seconds]
   U --> INV[Join latest known inventory]
@@ -84,19 +87,20 @@ Proposed: managed Spark executors, shared object storage, replicated Kafka, vers
 5. Select the highest valid revision for each non-conflicting event ID. A correction retains the ID and increments revision.
 6. Materialize canonical Silver events, then read that persisted snapshot for assessment calculations.
 7. Resolve packaging lineage: follow unit → carton → pallet → container memberships that overlap in time; report contradictory parents, level mismatches and cycles, and leave those memberships out.
-8. Intersect the resolved product placement, sensor/container assignment, measured interval and product specification validity.
-9. Union overlapping intervals independently for expected presence, observed coverage and unsafe exposure. Sum elapsed seconds only after unioning.
-10. Apply the illustrative excursion rule; carry missing coverage and latest inventory context.
-11. Insert product assessments keyed by snapshotId; write the manifest only after all assessments succeed.
-12. Consumers select max committed snapshotId and read only matching assessment-history records.
-13. On late evidence or correction, reconstruct the affected history. The prototype recomputes all retained data; the target design limits recomputation to impacted products and intervals.
+8. Keep every assignment and custody revision with provenance; report a sensor in two containers or two custodians at once and leave those out; list the units each assignment correction affects on both its former and revised side.
+9. Intersect the resolved product placement, sensor/container assignment, measured interval and product specification validity.
+10. Union overlapping intervals independently for expected presence, observed coverage and unsafe exposure. Sum elapsed seconds only after unioning.
+11. Apply the illustrative excursion rule; carry missing coverage and latest inventory context.
+12. Insert product assessments keyed by snapshotId; write the manifest only after all assessments succeed.
+13. Consumers select max committed snapshotId and read only matching assessment-history records.
+14. On late evidence or correction, reconstruct the affected history. The prototype recomputes all retained data; the target design limits recomputation to impacted products and intervals.
 
 ## Business behavior and acceptance scenario
 
-UNIT-A and UNIT-B share product code DRUG-DEMO and lot LOT-1, but occupy BOX-A and BOX-B. UNIT-D is in CARTON-1 on PALLET-1 in BOX-A, so it reaches BOX-A only through packaging lineage and must behave exactly like UNIT-A. A synthetic sensor reports 12 C for a measured ten-minute interval. The illustrative specification permits 2-8 C and 60 cumulative excursion seconds. Revision 1 assigns the sensor to BOX-A: A requires quality review, B has insufficient data. Revision 2 corrects the assignment to BOX-B: B requires review and A becomes insufficient-data. Both published assessments remain discoverable by snapshot. One duplicate reading must not increase the measured 600 seconds. These values are demo inputs, not handling guidance for medicines.
+UNIT-A and UNIT-B share product code DRUG-DEMO and lot LOT-1, but occupy BOX-A and BOX-B. UNIT-D is in CARTON-1 on PALLET-1 in BOX-A, so it reaches BOX-A only through packaging lineage and must behave exactly like UNIT-A. The correction must list UNIT-A and UNIT-D as formerly mapped and UNIT-B as newly mapped. BOX-A passes from CARRIER-1 to WAREHOUSE-1 at 12:05 with no custody gap; BOX-B has no recorded custodian (600 missing custody seconds). A synthetic sensor reports 12 C for a measured ten-minute interval. The illustrative specification permits 2-8 C and 60 cumulative excursion seconds. Revision 1 assigns the sensor to BOX-A: A requires quality review, B has insufficient data. Revision 2 corrects the assignment to BOX-B: B requires review and A becomes insufficient-data. Both published assessments remain discoverable by snapshot. One duplicate reading must not increase the measured 600 seconds. These values are demo inputs, not handling guidance for medicines.
 
 ## Boundaries and non-goals
 
 Implemented: explicit measured intervals, direct product-to-container placements, nested carton/pallet lineage with split/merge/repack over time and anomaly detection, sensor assignment revisions, cumulative excursion and coverage, latest known inventory, source quarantine, retained assessments and local tests.
 
-Planned: custody chains, unit conversion, calibration provenance, deletions/retractions, validated product-specific exposure models, regional/tenant isolation, real CDC connectors, clinical/quality approvals, query API, dashboards, notification delivery, immutable evidence version references, incremental impact processing and comprehensive integration/recovery tests.
+Implemented also: revisioned sensor assignment and container custody timelines with ambiguity detection and correction impact. Planned: custody transfer acknowledgements, unit conversion, calibration provenance, deletions/retractions, validated product-specific exposure models, regional/tenant isolation, real CDC connectors, clinical/quality approvals, query API, dashboards, notification delivery, immutable evidence version references, incremental impact processing and comprehensive integration/recovery tests.
