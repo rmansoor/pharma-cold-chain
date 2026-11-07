@@ -14,6 +14,7 @@ Event-time lateness is not bounded by a watermark in this implementation. Histor
 |---|---|---|
 | READING | coldchain.sensors | sensorId, startTime, endTime, temperatureC (-100 to 100) |
 | PLACEMENT | coldchain.traceability | productId, productCode, lotId, containerId, startTime, endTime |
+| PACKING | coldchain.traceability | childId, childLevel, parentId, parentLevel (above childLevel), startTime, endTime; productCode and lotId for a UNIT child |
 | ASSIGNMENT | coldchain.traceability | sensorId, containerId, startTime, endTime |
 | INVENTORY | coldchain.inventory | productId, location, status: IN_STOCK or DISPATCHED |
 | SPEC | coldchain.specifications | productCode, startTime, endTime, minC <= maxC, maxExcursionSeconds >= 0 |
@@ -31,6 +32,9 @@ Product specifications are operational input, not static Java constants. Overlap
 | silver/conflict_cases | caseId / rebuilt snapshot | PAYLOAD_MISMATCH and KIND_MISMATCH cases with every competing variant and its coordinates, and resolution status |
 | silver/case_log | caseId, status / insert-only MERGE | Audit trail: the snapshot and time each quarantine or conflict case was first OPEN and first RESOLVED |
 | silver/events_current | latest eventId revision / rebuilt snapshot | Valid canonical fields plus source metadata |
+| silver/memberships | eventId / rebuilt snapshot | Every direct membership (PLACEMENT as UNIT → CONTAINER, and PACKING) with child/parent IDs and levels, interval, eventId, revision and the anomalies it takes part in |
+| silver/lineage_anomalies | rebuilt snapshot | CONTRADICTORY_PARENT, LEVEL_MISMATCH and CYCLE with subject ID, event IDs and window |
+| silver/unit_containers | rebuilt snapshot | Resolved container interval per serialized unit, with productCode, lotId, path (unit → … → container) and lineageIds (the membership events used) |
 | gold/assessment_history | productId, snapshotId / insert-only MERGE | Coverage, excursion, missing data, rule, inventory and evidence IDs |
 | gold/commits | snapshotId / insert-only MERGE | Publication timestamp and product count |
 | checkpoints/medallion | Spark-managed | Kafka progress and micro-batch identity |
@@ -39,14 +43,16 @@ No table is automatically partitioned in the demo. Production partitioning/clust
 
 ## 4. Temporal reconstruction algorithm
 
-For a candidate placement p, matching assignment a, reading r and specification s:
+Lineage (Lineage.java) first resolves where each unit is. Starting from every direct membership, it repeatedly joins the parent to that parent's own memberships where the intervals overlap, intersecting the intervals and recording the path, for at most 8 hops. Because each hop must go up a level, a valid chain has at most 3 hops; a longer one implies a level mismatch, which is reported. Memberships involved in an anomaly are removed before resolution. A resolved interval is a path from a UNIT to a CONTAINER, and it is what the algorithm below calls a placement.
+
+For a candidate resolved placement p, matching assignment a, reading r and specification s:
 
 segmentStart = max(p.start, a.start, r.start, s.start)
 segmentEnd = min(p.end, a.end, r.end, s.end)
 
 Retain a segment only when segmentStart < segmentEnd. Match p.containerId = a.containerId, a.sensorId = r.sensorId and p.productCode = s.productCode. Exposure is outside [minC,maxC]; the endpoints are inclusive acceptable bounds in the illustrative rule.
 
-Compute three interval sets per product: EXPECTED from placements; COVERAGE from valid measured segments; UNSAFE from segments whose temperature is outside the matching specification. For each set, sort intervals, compute maximum prior end, start a new island only when the next start exceeds the prior end, and sum each merged island's duration. Touching intervals form one island. This prevents duplicate or overlapping evidence from multiplying duration.
+Compute three interval sets per product: EXPECTED from the unit's direct memberships (including ones excluded by an anomaly, and time when its carton is not yet on a pallet), so unresolved time counts as missing coverage; COVERAGE from valid measured segments; UNSAFE from segments whose temperature is outside the matching specification. For each set, sort intervals, compute maximum prior end, start a new island only when the next start exceeds the prior end, and sum each merged island's duration. Touching intervals form one island. This prevents duplicate or overlapping evidence from multiplying duration.
 
 coveredSeconds can never exceed expectedSeconds under valid intersection logic. missingSeconds = expectedSeconds - coveredSeconds. Assessments operate per product across the entire retained placement history, not per shipment or excursion episode. Shipment-level identity and episode boundaries are planned design work.
 
@@ -56,7 +62,7 @@ coveredSeconds can never exceed expectedSeconds under valid intersection logic. 
 - INSUFFICIENT_DATA: coverage is incomplete or no matching specification/evidence supports evaluation.
 - NO_OBSERVED_EXCURSION: complete modeled coverage and no threshold breach. This is not a certificate of product quality or a release authorization.
 
-Inventory is selected by newest eventTime, then revision, then eventId. It is latest known, not necessarily current physical location. UNKNOWN is used when inventory is absent. A stale-inventory indicator is planned. Gold contains the rule version exposure-v1 and sorted reading, assignment and specification event IDs. It currently lacks source revision numbers, placement IDs and lot/product-code fields in the assessment row; exact versioned evidence and lot-level serving are explicit backlog items.
+Inventory is selected by newest eventTime, then revision, then eventId. It is latest known, not necessarily current physical location. UNKNOWN is used when inventory is absent. A stale-inventory indicator is planned. Gold contains the rule version exposure-v2 (exposure through resolved packaging lineage) and sorted reading, assignment, specification and lineage (membership) event IDs. For direct placements, exposure-v2 gives the same numbers as exposure-v1. It currently lacks source revision numbers and lot/product-code fields in the assessment row; exact versioned evidence and lot-level serving are explicit backlog items.
 
 assessmentHash covers principal metrics, assessment, inventory, evidence IDs and ruleVersion. It is a content convenience, not the unique publication key or a complete provenance digest. snapshotId is the Spark batch ID within one retained checkpoint lineage.
 
@@ -76,4 +82,4 @@ Persist versioned domain tables for placements, container ancestry, assignments,
 
 ## 8. Code responsibilities
 
-Model.java: contract validation with per-rule reason codes, quarantine and conflict cases with resolution rules, semantic payload hashes, canonical revisions, interval joins/unions and assessment SQL. Pipeline.java: Kafka source, foreachBatch persistence and committed publication. Simulator.java: synthetic initial state, retries, malformed event and assignment correction. VerifyDemo.java: read committed assessments and check the expected correction. Inspect.java: print persisted-state counts used by scripts/restart-check.sh and scripts/crash-check.sh. BronzeTest.java: provenance fields, source-system fallback, replay without duplicates, repeated payloads as evidence, and appending to a Bronze table from before the provenance columns. ModelTest.java: six real Spark tests for correction/deduplication, interval union, invalid/conflicting contracts, published examples, the reason code for each contract violation, and formatting-insensitive conflict detection. SilverTest.java: quarantine evidence and resolution by correction, conflict cases with all variants and resolution by a higher revision, and the case log recording each transition once.
+Lineage.java: direct memberships, lineage anomalies and resolved unit-to-container intervals. Model.java: contract validation with per-rule reason codes, quarantine and conflict cases with resolution rules, semantic payload hashes, canonical revisions, interval joins/unions and assessment SQL. Pipeline.java: Kafka source, foreachBatch persistence and committed publication. Simulator.java: synthetic initial state, retries, malformed event and assignment correction. VerifyDemo.java: read committed assessments and check the expected correction. Inspect.java: print persisted-state counts used by scripts/restart-check.sh and scripts/crash-check.sh. BronzeTest.java: provenance fields, source-system fallback, replay without duplicates, repeated payloads as evidence, and appending to a Bronze table from before the provenance columns. ModelTest.java: six real Spark tests for correction/deduplication, interval union, invalid/conflicting contracts, published examples, the reason code for each contract violation, and formatting-insensitive conflict detection. SilverTest.java: quarantine evidence and resolution by correction, conflict cases with all variants and resolution by a higher revision, and the case log recording each transition once. LineageTest.java: the exact units affected before and after a pallet split, merge and repack over time, and contradictions, level mismatches and cycles that are reported and kept out of lineage.

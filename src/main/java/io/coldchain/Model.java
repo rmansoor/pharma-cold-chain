@@ -11,13 +11,16 @@ public final class Model {
   .add("lotId","string").add("containerId","string").add("sensorId","string")
   .add("startTime","timestamp").add("endTime","timestamp").add("temperatureC","double")
   .add("minC","double").add("maxC","double").add("maxExcursionSeconds","long")
-  .add("location","string").add("status","string");
+  .add("location","string").add("status","string")
+  .add("childId","string").add("childLevel","string").add("parentId","string").add("parentLevel","string");
  private Model() {}
  static final String SKEW="kafkaTime + INTERVAL 5 MINUTES";
- static final String KINDS="kind IN ('READING','PLACEMENT','ASSIGNMENT','SPEC','INVENTORY')";
- static final String INTERVAL_KINDS="kind IN ('READING','PLACEMENT','ASSIGNMENT','SPEC')";
+ static final String KINDS="kind IN ('READING','PLACEMENT','ASSIGNMENT','SPEC','INVENTORY','PACKING')";
+ static final String INTERVAL_KINDS="kind IN ('READING','PLACEMENT','ASSIGNMENT','SPEC','PACKING')";
+ static final String UNIT_PACKING="(kind = 'PACKING' AND childLevel = 'UNIT')";
+ static String rank(String level){return "array_position(array('UNIT','CARTON','PALLET','CONTAINER'),"+level+")";}
  static final String TOPIC="CASE kind WHEN 'READING' THEN 'coldchain.sensors' WHEN 'PLACEMENT' THEN 'coldchain.traceability' "
-  +"WHEN 'ASSIGNMENT' THEN 'coldchain.traceability' WHEN 'SPEC' THEN 'coldchain.specifications' WHEN 'INVENTORY' THEN 'coldchain.inventory' END";
+  +"WHEN 'ASSIGNMENT' THEN 'coldchain.traceability' WHEN 'PACKING' THEN 'coldchain.traceability' WHEN 'SPEC' THEN 'coldchain.specifications' WHEN 'INVENTORY' THEN 'coldchain.inventory' END";
  // A rule applies when its condition holds and yields its reason code when the check is false or unknown.
  static String rule(String code,String when,String ok){return "IF(coalesce("+when+",false) AND NOT coalesce("+ok+",false),'"+code+"',NULL)";}
  // Identifiers need a non-whitespace character; trim() alone would let tabs and newlines through.
@@ -30,8 +33,14 @@ public final class Model {
   rule("INVALID_KIND","true",KINDS),rule("WRONG_TOPIC",TOPIC+" IS NOT NULL","topic = "+TOPIC),
   rule("MISSING_EVENT_TIME","true","eventTime IS NOT NULL"),rule("EVENT_TIME_AHEAD_OF_KAFKA","true","eventTime IS NULL OR eventTime <= "+SKEW),
   id("sensorId","kind IN ('READING','ASSIGNMENT')"),id("productId","kind IN ('PLACEMENT','INVENTORY')"),
-  id("productCode","kind IN ('PLACEMENT','SPEC')"),id("lotId","kind = 'PLACEMENT'"),
+  id("productCode","kind IN ('PLACEMENT','SPEC') OR "+UNIT_PACKING),id("lotId","kind = 'PLACEMENT' OR "+UNIT_PACKING),
   id("containerId","kind IN ('PLACEMENT','ASSIGNMENT')"),id("location","kind = 'INVENTORY'"),
+  id("childId","kind = 'PACKING'"),id("parentId","kind = 'PACKING'"),
+  rule("INVALID_LEVEL:childLevel","kind = 'PACKING'","childLevel IN ('UNIT','CARTON','PALLET')"),
+  rule("INVALID_LEVEL:parentLevel","kind = 'PACKING'","parentLevel IN ('CARTON','PALLET','CONTAINER')"),
+  rule("PARENT_NOT_ABOVE_CHILD","kind = 'PACKING' AND childLevel IN ('UNIT','CARTON','PALLET') AND parentLevel IN ('CARTON','PALLET','CONTAINER')",
+   rank("parentLevel")+" > "+rank("childLevel")),
+  rule("SELF_CONTAINED","kind = 'PACKING'","childId IS NULL OR parentId IS NULL OR childId <> parentId"),
   rule("INVALID_INTERVAL",INTERVAL_KINDS,"startTime < endTime"),
   rule("FRACTIONAL_SECONDS",INTERVAL_KINDS,"coalesce(startTime = date_trunc('SECOND',startTime),true) AND coalesce(endTime = date_trunc('SECOND',endTime),true)"),
   rule("READING_ENDS_AHEAD_OF_KAFKA","kind = 'READING'","endTime IS NULL OR endTime <= "+SKEW),
@@ -94,10 +103,13 @@ public final class Model {
  }
  public static Dataset<Row> assessments(SparkSession spark, Dataset<Row> events) {
   events.createOrReplaceTempView("events");
-  spark.sql("SELECT * FROM events WHERE kind='PLACEMENT'").createOrReplaceTempView("placements");
-  // Split intervals at every placement, sensor assignment, reading and specification boundary.
+  // Units are expected wherever a membership puts them; they are covered only through a chain that reaches a container.
+  Dataset<Row> edges=Lineage.edges(events);
+  Lineage.unitContainers(edges,Lineage.anomalies(edges)).createOrReplaceTempView("placements");
+  edges.filter("childLevel = 'UNIT'").createOrReplaceTempView("units");
+  // Split intervals at every resolved container interval, sensor assignment, reading and specification boundary.
   spark.sql("""
-   SELECT p.productId, p.eventId placementId, p.lotId, p.productCode, r.eventId readingId,
+   SELECT p.productId, p.lineageIds, p.lotId, p.productCode, r.eventId readingId,
     a.eventId assignmentId, s.eventId specificationId,
     greatest(p.startTime,a.startTime,r.startTime,s.startTime) segmentStart,
     least(p.endTime,a.endTime,r.endTime,s.endTime) segmentEnd,
@@ -116,7 +128,7 @@ public final class Model {
    SELECT productId, 'UNSAFE', segmentStart, segmentEnd FROM segments
    WHERE temperatureC < minC OR temperatureC > maxC
    UNION ALL
-   SELECT productId, 'EXPECTED', startTime, endTime FROM placements
+   SELECT childId, 'EXPECTED', startTime, endTime FROM units
    """).createOrReplaceTempView("intervals");
   spark.sql("""
    WITH previous AS (
@@ -143,6 +155,7 @@ public final class Model {
    SELECT productId, sort_array(collect_set(readingId)) readingIds,
     sort_array(collect_set(assignmentId)) assignmentIds,
     sort_array(collect_set(specificationId)) specificationIds,
+    sort_array(array_distinct(flatten(collect_list(lineageIds)))) lineageIds,
     min(maxExcursionSeconds) allowedExcursionSeconds
    FROM segments GROUP BY productId
    """).createOrReplaceTempView("evidence");
@@ -154,16 +167,16 @@ public final class Model {
    """).createOrReplaceTempView("inventory");
   return spark.sql("""
    SELECT m.*, coalesce(e.allowedExcursionSeconds,0L) allowedExcursionSeconds,
-    e.readingIds,e.assignmentIds,e.specificationIds,
+    e.readingIds,e.assignmentIds,e.specificationIds,e.lineageIds,
     coalesce(i.location,'UNKNOWN') location,coalesce(i.status,'UNKNOWN') inventoryStatus,
     m.expectedSeconds-m.coveredSeconds missingSeconds,
     CASE WHEN m.excursionSeconds > e.allowedExcursionSeconds THEN 'QUALITY_REVIEW'
      WHEN m.coveredSeconds < m.expectedSeconds OR e.allowedExcursionSeconds IS NULL THEN 'INSUFFICIENT_DATA'
      ELSE 'NO_OBSERVED_EXCURSION' END assessment,
-    'exposure-v1' ruleVersion
+    'exposure-v2' ruleVersion
    FROM metrics m LEFT JOIN evidence e USING(productId) LEFT JOIN inventory i USING(productId)
    """).withColumn("assessmentHash",sha2(to_json(struct(col("expectedSeconds"),col("coveredSeconds"),
     col("excursionSeconds"),col("allowedExcursionSeconds"),col("assessment"),col("location"),
-    col("inventoryStatus"),col("readingIds"),col("assignmentIds"),col("specificationIds"),col("ruleVersion"))),256));
+    col("inventoryStatus"),col("readingIds"),col("assignmentIds"),col("specificationIds"),col("lineageIds"),col("ruleVersion"))),256));
  }
 }

@@ -28,10 +28,16 @@ class ModelTest {
   List<Map<String,Object>> initial=new ArrayList<>(Simulator.initial());initial.add(initial.get(6));
   Dataset<Row> before=Model.assessments(s,Model.canonical(parse(initial).filter("valid")));
   assertEquals(600L,(Long)before.filter("productId='UNIT-A'").first().getAs("excursionSeconds"));
+  // UNIT-D is in BOX-A through CARTON-1 and PALLET-1.
+  Row nested=before.filter("productId='UNIT-D'").first();
+  assertEquals("QUALITY_REVIEW",nested.getAs("assessment"));assertEquals(600L,(Long)nested.getAs("excursionSeconds"));
+  assertEquals(List.of("pack-carton-1","pack-pallet-1","pack-unit-D"),nested.getList(nested.fieldIndex("lineageIds")));
   Map<String,Object> corrected=new LinkedHashMap<>(initial.get(3));corrected.put("revision",2);corrected.put("containerId","BOX-B");initial.add(corrected);
   Dataset<Row> after=Model.assessments(s,Model.canonical(parse(initial).filter("valid")));
   assertEquals("QUALITY_REVIEW",after.filter("productId='UNIT-B'").first().getAs("assessment"));
   assertEquals("INSUFFICIENT_DATA",after.filter("productId='UNIT-A'").first().getAs("assessment"));
+  Row moved=after.filter("productId='UNIT-D'").first();
+  assertEquals("INSUFFICIENT_DATA",moved.getAs("assessment"));assertEquals(0L,(Long)moved.getAs("coveredSeconds"));assertNull(moved.getAs("lineageIds"));
  }
  @Test void overlappingReadingsCountUnionNotSum()throws Exception {
   List<Map<String,Object>> input=new ArrayList<>(Simulator.initial());var overlapping=new LinkedHashMap<>(input.get(6));overlapping.put("eventId","overlap");input.add(overlapping);
@@ -49,12 +55,12 @@ class ModelTest {
   try(var files=java.nio.file.Files.list(java.nio.file.Path.of("contracts/examples"))) {for(var f:files.sorted().toList())json.add(java.nio.file.Files.readString(f));}
   Dataset<Row> parsed=parseRaw(json,expr(TOPIC));
   assertEquals(0,parsed.filter("NOT valid").count());
-  assertEquals(Set.of("READING","PLACEMENT","ASSIGNMENT","SPEC","INVENTORY"),
+  assertEquals(Set.of("READING","PLACEMENT","ASSIGNMENT","SPEC","INVENTORY","PACKING"),
    new HashSet<>(parsed.select("kind").as(Encoders.STRING()).collectAsList()));
  }
  List<String> reasons(String json,Column topic){Row r=parseRaw(List.of(json),topic).first();return r.getList(r.fieldIndex("reasons"));}
  @Test void contractViolationsAreInvalidWithReasonCodes()throws Exception {
-  // Indexes into Simulator.initial(): 0 spec, 1 placement, 3 assignment, 4 inventory, 6 reading.
+  // Indexes into Simulator.initial(): 0 spec, 1 placement, 3 assignment, 4 inventory, 6 reading, 7 unit packing, 8 carton packing.
   String reading=Simulator.JSON.writeValueAsString(Simulator.initial().get(6)),spec=Simulator.JSON.writeValueAsString(Simulator.initial().get(0));
   Map<String,Object[]> cases=new LinkedHashMap<>();
   cases.put("blank eventId",new Object[]{with(6,"eventId","  "),"INVALID_ID:eventId"});
@@ -82,6 +88,14 @@ class ModelTest {
   cases.put("infinite maxC",new Object[]{spec.replace("8.0","Infinity"),"MALFORMED_JSON"});
   cases.put("infinite minC",new Object[]{spec.replace("2.0","-Infinity"),"MALFORMED_JSON"});
   cases.put("single-quoted JSON",new Object[]{reading.replace('"','\''),"MALFORMED_JSON"});
+  cases.put("blank childId",new Object[]{with(8,"childId"," "),"INVALID_ID:childId"});
+  cases.put("missing parentId",new Object[]{with(8,"parentId",null),"INVALID_ID:parentId"});
+  cases.put("unknown childLevel",new Object[]{with(8,"childLevel","CASE"),"INVALID_LEVEL:childLevel"});
+  cases.put("unit as parent",new Object[]{with(8,"parentLevel","UNIT"),"INVALID_LEVEL:parentLevel"});
+  cases.put("pallet in carton",new Object[]{with(8,"childLevel","PALLET","parentLevel","CARTON"),"PARENT_NOT_ABOVE_CHILD"});
+  cases.put("carton in itself",new Object[]{with(8,"parentId","CARTON-1"),"SELF_CONTAINED"});
+  cases.put("packed unit without lot",new Object[]{with(7,"lotId",null),"INVALID_ID:lotId"});
+  cases.put("packing without interval",new Object[]{with(8,"startTime",null),"INVALID_INTERVAL"});
   cases.put("malformed JSON",new Object[]{"{broken","MALFORMED_JSON"});
   cases.put("JSON array",new Object[]{"[1,2]","MALFORMED_JSON"});
   for(var c:cases.entrySet()) {
@@ -89,6 +103,8 @@ class ModelTest {
    assertEquals(List.of(c.getValue()[1]),reasons(json,expr(TOPIC)),c.getKey());
   }
   assertEquals(List.of(),reasons(reading,expr(TOPIC)));assertEquals(List.of(),reasons(spec,expr(TOPIC)));
+  // A carton or pallet needs no product code or lot.
+  assertEquals(List.of(),reasons(Simulator.JSON.writeValueAsString(Simulator.initial().get(8)),expr(TOPIC)));
   assertEquals(List.of("WRONG_TOPIC"),reasons(reading,lit("coldchain.traceability")),"reading on wrong topic");
   // Independent faults are all reported.
   assertEquals(List.of("INVALID_REVISION","INVALID_ID:sensorId","OUT_OF_RANGE:temperatureC"),
