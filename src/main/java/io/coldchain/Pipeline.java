@@ -17,7 +17,8 @@ public final class Pipeline {
  }
  static void merge(SparkSession s, Dataset<Row> data, String path, String condition) {
   if(!DeltaTable.isDeltaTable(s,path)) data.write().format("delta").mode("overwrite").save(path);
-  else DeltaTable.forPath(s,path).as("t").merge(data.as("s"),condition).whenNotMatched().insertAll().execute();
+  // Schema evolution lets tables written by an earlier version take rows with new columns (for example Gold lineageIds).
+  else DeltaTable.forPath(s,path).as("t").merge(data.as("s"),condition).whenNotMatched().insertAll().withSchemaEvolution().execute();
  }
  // Owner role per topic (docs/event-contracts.md), used when a record does not declare its source system.
  static final String OWNER="CASE topic WHEN 'coldchain.sensors' THEN 'sensor-gateway' WHEN 'coldchain.traceability' THEN 'traceability' "
@@ -65,6 +66,10 @@ public final class Pipeline {
   snapshot(canonical,DATA+"/silver/events_current");
   // Pin canonical input by reading the materialized version for all Gold calculations.
   Dataset<Row> current=s.read().format("delta").load(DATA+"/silver/events_current");
+  Dataset<Row> edges=Lineage.edges(current).cache(),anomalies=Lineage.anomalies(edges).cache();
+  snapshot(Lineage.memberships(edges,anomalies),DATA+"/silver/memberships");
+  snapshot(anomalies,DATA+"/silver/lineage_anomalies");
+  snapshot(Lineage.unitContainers(edges,anomalies),DATA+"/silver/unit_containers");
   Dataset<Row> assessed=Model.assessments(s,current).withColumn("snapshotId",lit(id)).cache();
   merge(s,assessed,DATA+"/gold/assessment_history","t.productId=s.productId AND t.snapshotId=s.snapshotId");
   // Manifest is written last. Readers must use history filtered by a committed snapshotId.
@@ -72,7 +77,7 @@ public final class Pipeline {
    lit(assessed.count()).alias("products"));
   merge(s,manifest,DATA+"/gold/commits","t.snapshotId=s.snapshotId");
   System.out.println("COMMITTED snapshot="+id+" products="+assessed.count());
-  assessed.unpersist();parsed.unpersist();
+  assessed.unpersist();edges.unpersist();anomalies.unpersist();parsed.unpersist();
  }
  public static void main(String[] args)throws Exception {
   SparkSession s=session("Cold-chain medallion pipeline");

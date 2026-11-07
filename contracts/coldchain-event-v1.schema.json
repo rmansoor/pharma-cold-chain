@@ -8,7 +8,7 @@
   "properties": {
     "eventId": {"$ref": "#/$defs/id", "description": "Globally unique across all kinds; keeps one kind across revisions"},
     "revision": {"type": "integer", "minimum": 1, "description": "Correction counter; the highest revision supersedes. A retry of the same eventId and revision must carry the same semantic payload"},
-    "kind": {"enum": ["READING", "PLACEMENT", "ASSIGNMENT", "SPEC", "INVENTORY"]},
+    "kind": {"enum": ["READING", "PLACEMENT", "ASSIGNMENT", "SPEC", "INVENTORY", "PACKING"]},
     "eventTime": {"$ref": "#/$defs/time", "description": "When the source recorded the fact; at most 5 minutes after the Kafka record timestamp"},
     "productId": {"$ref": "#/$defs/id", "description": "Serialized saleable unit"},
     "productCode": {"$ref": "#/$defs/id", "description": "Product (SKU) code that specifications apply to"},
@@ -22,14 +22,20 @@
     "maxC": {"$ref": "#/$defs/celsius", "description": "Highest acceptable temperature, inclusive; must be >= minC"},
     "maxExcursionSeconds": {"type": "integer", "minimum": 0, "description": "Seconds of cumulative excursion allowed before quality review"},
     "location": {"$ref": "#/$defs/id"},
-    "status": {"enum": ["IN_STOCK", "DISPATCHED"]}
+    "status": {"enum": ["IN_STOCK", "DISPATCHED"]},
+    "childId": {"$ref": "#/$defs/id", "description": "The packed item: a serialized unit (its productId), carton or pallet"},
+    "childLevel": {"enum": ["UNIT", "CARTON", "PALLET"]},
+    "parentId": {"$ref": "#/$defs/id", "description": "The packaging that holds the child"},
+    "parentLevel": {"enum": ["CARTON", "PALLET", "CONTAINER"], "description": "Must be above childLevel in UNIT < CARTON < PALLET < CONTAINER"}
   },
   "allOf": [
     {"if": {"properties": {"kind": {"const": "READING"}}}, "then": {"required": ["sensorId", "startTime", "endTime", "temperatureC"], "description": "Topic coldchain.sensors; endTime at most 5 minutes after the Kafka record timestamp"}},
     {"if": {"properties": {"kind": {"const": "PLACEMENT"}}}, "then": {"required": ["productId", "productCode", "lotId", "containerId", "startTime", "endTime"], "description": "Topic coldchain.traceability"}},
     {"if": {"properties": {"kind": {"const": "ASSIGNMENT"}}}, "then": {"required": ["sensorId", "containerId", "startTime", "endTime"], "description": "Topic coldchain.traceability"}},
     {"if": {"properties": {"kind": {"const": "SPEC"}}}, "then": {"required": ["productCode", "startTime", "endTime", "minC", "maxC", "maxExcursionSeconds"], "description": "Topic coldchain.specifications"}},
-    {"if": {"properties": {"kind": {"const": "INVENTORY"}}}, "then": {"required": ["productId", "location", "status"], "description": "Topic coldchain.inventory"}}
+    {"if": {"properties": {"kind": {"const": "INVENTORY"}}}, "then": {"required": ["productId", "location", "status"], "description": "Topic coldchain.inventory"}},
+    {"if": {"properties": {"kind": {"const": "PACKING"}}}, "then": {"required": ["childId", "childLevel", "parentId", "parentLevel", "startTime", "endTime"], "description": "Topic coldchain.traceability; childId differs from parentId and parentLevel is above childLevel (both enforced in code)"}},
+    {"if": {"properties": {"kind": {"const": "PACKING"}, "childLevel": {"const": "UNIT"}}, "required": ["childLevel"]}, "then": {"required": ["productCode", "lotId"], "description": "A packed unit carries its product code and lot"}}
   ],
   "$defs": {
     "id": {"type": "string", "pattern": "\\S"},

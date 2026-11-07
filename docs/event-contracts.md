@@ -7,7 +7,7 @@ Contract for every record value on the four cold-chain topics. Machine-readable 
 | Topic | Kinds | Owning source (role) | Kafka key |
 |---|---|---|---|
 | coldchain.sensors | READING | Sensor telemetry gateway | eventId |
-| coldchain.traceability | PLACEMENT, ASSIGNMENT | Serialization / packing system (placements), logistics operations (sensor-to-container assignments) | eventId |
+| coldchain.traceability | PLACEMENT, PACKING, ASSIGNMENT | Serialization / packing system (placements and packing), logistics operations (sensor-to-container assignments) | eventId |
 | coldchain.specifications | SPEC | Quality assurance (approved storage conditions) | eventId |
 | coldchain.inventory | INVENTORY | Warehouse management system | eventId |
 
@@ -21,7 +21,7 @@ The owners are roles until named systems and contacts are agreed with each organ
 |---|---|---|
 | eventId | string | Required and must contain a non-whitespace character. Globally unique across all kinds, and keeps the same kind across revisions. |
 | revision | integer | Required, ≥ 1. |
-| kind | enum | READING, PLACEMENT, ASSIGNMENT, SPEC or INVENTORY. |
+| kind | enum | READING, PLACEMENT, PACKING, ASSIGNMENT, SPEC or INVENTORY. |
 | eventTime | RFC 3339 timestamp | Required. When the source recorded the fact; no more than 5 minutes after the Kafka record timestamp. |
 
 ## Kinds
@@ -33,8 +33,23 @@ The owners are roles until named systems and contacts are agreed with each organ
 | ASSIGNMENT | sensorId, containerId, startTime, endTime | The sensor measures that container during the interval. |
 | SPEC | productCode, startTime, endTime, minC, maxC, maxExcursionSeconds | Acceptable range [minC, maxC] in °C, inclusive, finite, −100 to 100, with minC ≤ maxC. maxExcursionSeconds (integer ≥ 0) is the cumulative time out of range allowed before quality review. |
 | INVENTORY | productId, location, status | status is IN_STOCK or DISPATCHED. |
+| PACKING | childId, childLevel, parentId, parentLevel, startTime, endTime; also productCode and lotId when childLevel is UNIT | childId is inside parentId during the interval. childLevel is UNIT, CARTON or PALLET; parentLevel is CARTON, PALLET or CONTAINER and must be above childLevel (UNIT < CARTON < PALLET < CONTAINER). A UNIT childId is the serialized unit's productId. childId and parentId differ. |
 
-Every identifier field (productId, productCode, lotId, containerId, sensorId, location) must contain a non-whitespace character.
+Every identifier field (productId, productCode, lotId, containerId, sensorId, location, childId, parentId) must contain a non-whitespace character.
+
+### Packaging lineage
+
+PLACEMENT is a membership of a unit directly in a container (UNIT → CONTAINER); PACKING covers cartons and pallets. A unit is in a container at an instant when a chain of memberships (unit → carton → pallet → container, or any shorter chain that ends at a container) holds at that instant. Splits, merges and repacks need no special event: the old membership ends and the new one starts at the same instant, and because intervals are half-open the unit is in exactly one place at the boundary. A correction to a membership is a higher revision of its event, as for every kind.
+
+Silver reports three lineage anomalies in `silver/lineage_anomalies`:
+
+| Anomaly | Meaning |
+|---|---|
+| CONTRADICTORY_PARENT | One child is in two different parents at the same instant (including a unit packed in a carton and also placed directly in a container). The window is the overlap. |
+| LEVEL_MISMATCH | One ID appears at two packaging levels, for example as a carton in one event and a pallet in another. |
+| CYCLE | An ID is its own ancestor at some instant. This needs a level mismatch, so both are reported. |
+
+Every membership involved in an anomaly is left out of resolved lineage, for its whole interval. The affected units still count as expected in Gold, so they show up as missing coverage (INSUFFICIENT_DATA) instead of being placed by guesswork. The anomalies are detected on valid contracts, so they are not quarantine reason codes.
 
 ## Time
 
@@ -79,6 +94,10 @@ Records that are not valid JSON, or that break any rule above, stay in Bronze as
 | SPEC_MIN_ABOVE_MAX | SPEC | minC is greater than maxC. |
 | INVALID_EXCURSION_ALLOWANCE | SPEC | maxExcursionSeconds is missing, not an integer, or negative. |
 | INVALID_STATUS | INVENTORY | status is missing or not IN_STOCK or DISPATCHED. |
+| INVALID_ID:childId, :parentId | PACKING | Missing or blank. productCode and lotId are also required (INVALID_ID) when childLevel is UNIT. |
+| INVALID_LEVEL:childLevel, :parentLevel | PACKING | Missing or not an allowed level for that end. |
+| PARENT_NOT_ABOVE_CHILD | PACKING | parentLevel is not above childLevel, for example a pallet in a carton. |
+| SELF_CONTAINED | PACKING | childId equals parentId. |
 
 Codes are reported independently, so a record with a zero revision and a blank sensorId gets both. Rules for a kind are checked only when the kind is known.
 
@@ -108,7 +127,7 @@ Because revisions only grow, a resolved case cannot reopen. A new dispute at a h
 
 ## Where each rule is enforced
 
-The JSON Schema covers per-field rules: presence, type, non-whitespace identifiers, enums, ranges and whole-second bounds. These rules are enforced only in code because JSON Schema cannot express them: startTime < endTime, minC ≤ maxC, kind-to-topic mapping, the 5-minute skew against the Kafka timestamp, and the revision/conflict rules. The schema is not yet run against live traffic; it documents the contract, and the examples are checked against both the schema and the code.
+The JSON Schema covers per-field rules: presence, type, non-whitespace identifiers, enums, ranges and whole-second bounds. These rules are enforced only in code because JSON Schema cannot express them: startTime < endTime, minC ≤ maxC, parent level above child level, childId ≠ parentId, kind-to-topic mapping, the 5-minute skew against the Kafka timestamp, and the revision/conflict rules. The schema is not yet run against live traffic; it documents the contract, and the examples are checked against both the schema and the code.
 
 ## Changing the contract
 
@@ -119,5 +138,7 @@ Adding an optional field or a new enum value is a minor change: update the schem
 - There is no manual resolution: a steward cannot yet acknowledge or close a KIND_MISMATCH or an unattributable invalid record. Those stay OPEN.
 - A field with the wrong JSON type is reported under that field's code (for example INVALID_REVISION for `"revision": "two"`), not as a separate type error.
 - Overlapping specifications and simultaneous assignments are valid contracts; resolving them belongs to CC-06 and CC-07.
+- A membership needs an end time. An open-ended membership ("still on the pallet") has to be sent with a provisional end and revised later.
+- A lineage anomaly excludes every membership involved for its whole interval, not only the overlapping window. There is no steward resolution for anomalies yet; the source has to send corrected revisions.
 - An unknown field is ignored without a warning, so a misspelled optional field is silently lost.
 - The 5-minute skew is a fixed constant and not configurable per source.
