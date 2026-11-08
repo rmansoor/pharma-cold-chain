@@ -15,7 +15,8 @@ public final class Simulator {
  public static List<Map<String,Object>> initial() {
   String a="2026-01-01T12:00:00Z",b="2026-01-01T12:10:00Z";
   return List.of(
-   event("spec","SPEC","productCode","DRUG-DEMO","startTime",a,"endTime",b,"minC",2.0,"maxC",8.0,"maxExcursionSeconds",60),
+   // Synthetic thresholds: used only where ALLOW_SYNTHETIC_SPECS is set (the Compose demo).
+   event("spec","SPEC","productCode","DRUG-DEMO","startTime",a,"endTime",b,"minC",2.0,"maxC",8.0,"maxExcursionSeconds",60,"synthetic",true),
    event("place-A","PLACEMENT","productId","UNIT-A","productCode","DRUG-DEMO","lotId","LOT-1","containerId","BOX-A","startTime",a,"endTime",b),
    event("place-B","PLACEMENT","productId","UNIT-B","productCode","DRUG-DEMO","lotId","LOT-1","containerId","BOX-B","startTime",a,"endTime",b),
    event("assign","ASSIGNMENT","sensorId","SENSOR-1","containerId","BOX-A","startTime",a,"endTime",b),
@@ -29,14 +30,16 @@ public final class Simulator {
    event("pack-pallet-1","PACKING","childId","PALLET-1","childLevel","PALLET","parentId","BOX-A","parentLevel","CONTAINER","startTime",a,"endTime",b),
    // BOX-A changes hands at 12:05; BOX-B has no recorded custodian.
    event("custody-A-1","CUSTODY","containerId","BOX-A","custodianId","CARRIER-1","startTime",a,"endTime","2026-01-01T12:05:00Z"),
-   event("custody-A-2","CUSTODY","containerId","BOX-A","custodianId","WAREHOUSE-1","startTime","2026-01-01T12:05:00Z","endTime",b));
+   event("custody-A-2","CUSTODY","containerId","BOX-A","custodianId","WAREHOUSE-1","startTime","2026-01-01T12:05:00Z","endTime",b),
+   // SENSOR-1 holds a calibration valid for the whole demo, with ±0.5 °C expanded uncertainty.
+   event("calibration-1","CALIBRATION","sensorId","SENSOR-1","startTime","2025-12-01T00:00:00Z","endTime","2026-12-01T00:00:00Z","uncertaintyC",0.5));
  }
  // Declares the producing system so Bronze provenance does not fall back to the topic owner.
  static ProducerRecord<String,String> record(String topic,String key,String value) {
   ProducerRecord<String,String> r=new ProducerRecord<>(topic,key,value);
   r.headers().add(new RecordHeader("source-system","simulator".getBytes(java.nio.charset.StandardCharsets.UTF_8)));return r;
  }
- static String topic(String kind){return switch(kind){case "READING"->"coldchain.sensors";case "SPEC"->"coldchain.specifications";case "INVENTORY"->"coldchain.inventory";default->"coldchain.traceability";};}
+ static String topic(String kind){return switch(kind){case "READING","CALIBRATION"->"coldchain.sensors";case "SPEC"->"coldchain.specifications";case "INVENTORY"->"coldchain.inventory";default->"coldchain.traceability";};}
  public static void main(String[] args)throws Exception {
   Properties p=new Properties();p.put("bootstrap.servers",System.getenv().getOrDefault("KAFKA_BOOTSTRAP","kafka:9092"));
   p.put("key.serializer",StringSerializer.class.getName());p.put("value.serializer",StringSerializer.class.getName());p.put("acks","all");p.put("enable.idempotence","true");

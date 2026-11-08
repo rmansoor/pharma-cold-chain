@@ -15,6 +15,7 @@ Java 17 + Kafka 3.9.1 + Spark 3.5.7 + Delta Lake 3.3.3. A local reference implem
 
 ```sh
 mvn -s maven-settings.xml -B test
+export ALLOW_SYNTHETIC_SPECS=true   # the demo's thresholds are synthetic; without this the pipeline ignores them
 docker compose up -d --build pipeline
 docker compose --profile demo run --rm simulator
 docker compose --profile demo run --rm verify
@@ -25,4 +26,4 @@ Needs about 4 GB of Docker memory. Versions, measured resources and the restart 
 
 Host Kafka: localhost:29092. Spark UI: localhost:4041. New project volumes are separate from the earlier fraud project. The prototype reconstructs all retained Bronze evidence per nonempty batch; incremental processing is planned. Synthetic thresholds are not product-handling guidance. No clinical decisions, automatic recalls or compliance certification are implemented.
 
-Six local Spark transformation and contract tests pass (`mvn -s maven-settings.xml -B test`). Real-broker integration and fault-injection validation must be recorded separately. Jira: epic SID-12, stories SID-13..SID-28 (see docs/jira-backlog.json).
+23 local Spark transformation and contract tests pass (`mvn -s maven-settings.xml -B test`). CI also runs the Compose demo, restart and crash checks. Jira: epic SID-12, stories SID-13..SID-28 (see docs/jira-backlog.json).

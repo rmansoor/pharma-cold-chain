@@ -105,6 +105,7 @@ class LineageTest {
   input.add(Simulator.event("spec","SPEC","productCode","DRUG-DEMO","startTime",t(0),"endTime",t(20),"minC",2.0,"maxC",8.0,"maxExcursionSeconds",60));
   input.add(Simulator.event("assign-x","ASSIGNMENT","sensorId","S1","containerId","X","startTime",t(0),"endTime",t(20)));
   input.add(Simulator.event("cool","READING","sensorId","S1","startTime",t(0),"endTime",t(20),"temperatureC",5.0));
+  input.add(Simulator.event("cal-s1","CALIBRATION","sensorId","S1","startTime",t(0),"endTime",t(20),"uncertaintyC",0.5));
   Dataset<Row> gold=Model.assessments(s,events(input));
   Row u5=gold.filter("productId = 'U5'").first();
   assertEquals("INSUFFICIENT_DATA",u5.getAs("assessment"));assertEquals(0L,(long)u5.getAs("coveredSeconds"));assertEquals(900L,(long)u5.getAs("expectedSeconds"));

@@ -33,8 +33,11 @@ flowchart TD
   E --> TL[Assignment and custody timelines: revisions, anomalies, invalidations]
   TL --> TA[(Silver: timelines, timeline anomalies, mapping invalidations)]
   TL --> J
+  E --> SP[Specification precedence; reading units, calibration and sampling gaps]
+  SP --> SQ[(Silver: specifications, specification overlaps, readings, sampling gaps)]
+  SP --> J
   LIN --> J[Temporal intersection of resolved placement, assignment, reading and specification]
-  J --> U[Union intervals; compute coverage and excursion seconds]
+  J --> U[Union intervals; compute coverage, excursion, uncertainty and calibration seconds]
   U --> INV[Join latest known inventory]
   INV --> H[(Gold: assessment history by product and snapshot)]
   H --> M[(Gold: committed snapshot manifest)]

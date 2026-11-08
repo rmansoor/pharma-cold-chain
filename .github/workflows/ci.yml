@@ -22,6 +22,8 @@ jobs:
     needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    # The demo's thresholds are synthetic; only the demo deployment may use them.
+    env: {ALLOW_SYNTHETIC_SPECS: 'true'}
     steps:
       - uses: actions/checkout@v4
       - run: docker compose up -d --build pipeline

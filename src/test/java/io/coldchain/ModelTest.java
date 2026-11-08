@@ -6,9 +6,11 @@ import static org.apache.spark.sql.functions.*;
 import static org.junit.jupiter.api.Assertions.*;
 class ModelTest {
  static SparkSession s;
- @BeforeAll static void start(){s=Pipeline.session("cold-chain-tests");s.sparkContext().setLogLevel("ERROR");}
+ @BeforeAll static void start(){s=Pipeline.session("cold-chain-tests");s.sparkContext().setLogLevel("ERROR");
+  // Simulator.initial() carries the demo's synthetic thresholds.
+  s.conf().set(Specifications.ALLOW_SYNTHETIC,true);}
  @AfterAll static void stop(){s.stop();}
- static final String TOPIC="CASE get_json_object(raw,'$.kind') WHEN 'READING' THEN 'coldchain.sensors' WHEN 'SPEC' THEN 'coldchain.specifications' WHEN 'INVENTORY' THEN 'coldchain.inventory' ELSE 'coldchain.traceability' END";
+ static final String TOPIC="CASE get_json_object(raw,'$.kind') WHEN 'READING' THEN 'coldchain.sensors' WHEN 'CALIBRATION' THEN 'coldchain.sensors' WHEN 'SPEC' THEN 'coldchain.specifications' WHEN 'INVENTORY' THEN 'coldchain.inventory' ELSE 'coldchain.traceability' END";
  static Dataset<Row> parseRaw(List<String> json,Column topic) {
   Dataset<Row> raw=SparkSession.active().createDataset(json,Encoders.STRING()).toDF("raw").withColumn("topic",topic)
    .withColumn("kafkaTime",current_timestamp()).withColumn("partition",lit(0)).withColumn("offset",monotonically_increasing_id())
@@ -45,7 +47,7 @@ class ModelTest {
   assertEquals(600L,(Long)a.getAs("coveredSeconds"));assertEquals(600L,(Long)a.getAs("excursionSeconds"));
  }
  @Test void invalidAndConflictingContractsAreExcluded()throws Exception {
-  List<Map<String,Object>> input=new ArrayList<>(Simulator.initial());var broken=new LinkedHashMap<>(input.get(6));broken.put("eventId","invalid");broken.put("endTime",broken.get("startTime"));input.add(broken);
+  List<Map<String,Object>> input=new ArrayList<>(Simulator.initial());var broken=new LinkedHashMap<>(input.get(6));broken.put("eventId","invalid");broken.put("endTime","2026-01-01T11:00:00Z");input.add(broken);
   Dataset<Row> parsed=parse(input);assertEquals(1,parsed.filter("NOT valid").count());
   var conflict=new LinkedHashMap<>(input.get(3));conflict.put("containerId","OTHER");input.add(conflict);
   assertEquals(0,Model.canonical(parse(input).filter("valid")).filter("eventId='assign'").count());
@@ -55,12 +57,13 @@ class ModelTest {
   try(var files=java.nio.file.Files.list(java.nio.file.Path.of("contracts/examples"))) {for(var f:files.sorted().toList())json.add(java.nio.file.Files.readString(f));}
   Dataset<Row> parsed=parseRaw(json,expr(TOPIC));
   assertEquals(0,parsed.filter("NOT valid").count());
-  assertEquals(Set.of("READING","PLACEMENT","ASSIGNMENT","SPEC","INVENTORY","PACKING","CUSTODY"),
+  assertEquals(Set.of("READING","PLACEMENT","ASSIGNMENT","SPEC","INVENTORY","PACKING","CUSTODY","CALIBRATION"),
    new HashSet<>(parsed.select("kind").as(Encoders.STRING()).collectAsList()));
  }
  List<String> reasons(String json,Column topic){Row r=parseRaw(List.of(json),topic).first();return r.getList(r.fieldIndex("reasons"));}
  @Test void contractViolationsAreInvalidWithReasonCodes()throws Exception {
-  // Indexes into Simulator.initial(): 0 spec, 1 placement, 3 assignment, 4 inventory, 6 reading, 7 unit packing, 8 carton packing, 10 custody.
+  // Indexes into Simulator.initial(): 0 spec, 1 placement, 3 assignment, 4 inventory, 6 reading, 7 unit packing, 8 carton packing, 10 custody,
+  // 12 calibration.
   String reading=Simulator.JSON.writeValueAsString(Simulator.initial().get(6)),spec=Simulator.JSON.writeValueAsString(Simulator.initial().get(0));
   Map<String,Object[]> cases=new LinkedHashMap<>();
   cases.put("blank eventId",new Object[]{with(6,"eventId","  "),"INVALID_ID:eventId"});
@@ -71,7 +74,8 @@ class ModelTest {
   cases.put("fractional revision",new Object[]{with(6,"revision",1.5),"INVALID_REVISION"});
   cases.put("unknown kind",new Object[]{with(6,"kind","TELEMETRY"),"INVALID_KIND"});
   cases.put("unknown status",new Object[]{with(4,"status","LOST"),"INVALID_STATUS"});
-  cases.put("empty interval",new Object[]{with(6,"endTime","2026-01-01T12:00:00Z"),"INVALID_INTERVAL"});
+  cases.put("empty interval",new Object[]{with(3,"endTime","2026-01-01T12:00:00Z"),"INVALID_INTERVAL"});
+  cases.put("reversed reading",new Object[]{with(6,"endTime","2026-01-01T11:00:00Z"),"INVALID_INTERVAL"});
   cases.put("reversed interval",new Object[]{with(1,"startTime","2026-01-01T12:20:00Z"),"INVALID_INTERVAL"});
   cases.put("missing endTime",new Object[]{with(3,"endTime",null),"INVALID_INTERVAL"});
   cases.put("subsecond bound",new Object[]{with(6,"startTime","2026-01-01T12:00:00.500Z"),"FRACTIONAL_SECONDS"});
@@ -81,6 +85,15 @@ class ModelTest {
   cases.put("unparseable eventTime",new Object[]{with(4,"eventTime","yesterday"),"MISSING_EVENT_TIME"});
   cases.put("revision as text",new Object[]{with(6,"revision","two"),"INVALID_REVISION"});
   cases.put("temperature out of range",new Object[]{with(6,"temperatureC",150.0),"OUT_OF_RANGE:temperatureC"});
+  cases.put("two temperature forms",new Object[]{with(6,"temperature",53.6,"temperatureUnit","F"),"AMBIGUOUS_TEMPERATURE"});
+  cases.put("unsupported unit",new Object[]{with(6,"temperatureC",null,"temperature",53.6,"temperatureUnit","R"),"INVALID_UNIT:temperatureUnit"});
+  cases.put("value without unit",new Object[]{with(6,"temperatureC",null,"temperature",53.6),"INVALID_UNIT:temperatureUnit"});
+  cases.put("unit without value",new Object[]{with(6,"temperatureC",null,"temperatureUnit","F"),"OUT_OF_RANGE:temperatureC"});
+  cases.put("Fahrenheit out of range",new Object[]{with(6,"temperatureC",null,"temperature",300.0,"temperatureUnit","F"),"OUT_OF_RANGE:temperatureC"});
+  cases.put("negative uncertainty",new Object[]{with(12,"uncertaintyC",-0.1),"OUT_OF_RANGE:uncertaintyC"});
+  cases.put("calibration without sensor",new Object[]{with(12,"sensorId",null),"INVALID_ID:sensorId"});
+  cases.put("calibration at an instant",new Object[]{with(12,"endTime","2025-12-01T00:00:00Z"),"INVALID_INTERVAL"});
+  cases.put("mistyped synthetic flag",new Object[]{with(0,"synthetic","yes"),"INVALID_FLAG:synthetic"});
   cases.put("inverted spec",new Object[]{with(0,"minC",9.0),"SPEC_MIN_ABOVE_MAX"});
   cases.put("negative allowance",new Object[]{with(0,"maxExcursionSeconds",-1),"INVALID_EXCURSION_ALLOWANCE"});
   // NaN and Infinity are not JSON (RFC 8259), although Spark's lenient from_json would read them.

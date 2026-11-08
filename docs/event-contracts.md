@@ -6,7 +6,7 @@ Contract for every record value on the four cold-chain topics. Machine-readable 
 
 | Topic | Kinds | Owning source (role) | Kafka key |
 |---|---|---|---|
-| coldchain.sensors | READING | Sensor telemetry gateway | eventId |
+| coldchain.sensors | READING, CALIBRATION | Sensor telemetry gateway (readings, and calibration certificates relayed from the metrology system) | eventId |
 | coldchain.traceability | PLACEMENT, PACKING, ASSIGNMENT, CUSTODY | Serialization / packing system (placements and packing), logistics operations (sensor-to-container assignments and custody) | eventId |
 | coldchain.specifications | SPEC | Quality assurance (approved storage conditions) | eventId |
 | coldchain.inventory | INVENTORY | Warehouse management system | eventId |
@@ -21,22 +21,33 @@ The owners are roles until named systems and contacts are agreed with each organ
 |---|---|---|
 | eventId | string | Required and must contain a non-whitespace character. Globally unique across all kinds, and keeps the same kind across revisions. |
 | revision | integer | Required, ≥ 1. |
-| kind | enum | READING, PLACEMENT, PACKING, ASSIGNMENT, CUSTODY, SPEC or INVENTORY. |
+| kind | enum | READING, CALIBRATION, PLACEMENT, PACKING, ASSIGNMENT, CUSTODY, SPEC or INVENTORY. |
 | eventTime | RFC 3339 timestamp | Required. When the source recorded the fact; no more than 5 minutes after the Kafka record timestamp. |
 
 ## Kinds
 
 | Kind | Required fields | Units and meaning |
 |---|---|---|
-| READING | sensorId, startTime, endTime, temperatureC | °C, finite, −100 to 100. The value applies uniformly across [startTime, endTime). endTime is no more than 5 minutes after the Kafka timestamp, so a reading cannot cover the future. |
+| READING | sensorId, startTime, endTime, and either temperatureC or temperature with temperatureUnit | temperatureC is °C. temperature is in temperatureUnit, which is C, F or K, and is normalized to °C (rounded to 10⁻⁶). Either way the value must be finite and −100 to 100 °C. The value applies uniformly across [startTime, endTime). startTime = endTime is a **point observation** at that instant. endTime is no more than 5 minutes after the Kafka timestamp, so a reading cannot cover the future. |
+| CALIBRATION | sensorId, startTime, endTime, uncertaintyC | The sensor has a valid calibration during the interval. uncertaintyC is its expanded measurement uncertainty (±), 0 to 10 °C. |
 | PLACEMENT | productId, productCode, lotId, containerId, startTime, endTime | The serialized unit productId is in containerId during the interval. |
 | ASSIGNMENT | sensorId, containerId, startTime, endTime | The sensor measures that container during the interval. |
 | CUSTODY | containerId, custodianId, startTime, endTime | The custodian (an organization or site) is responsible for the container during the interval. |
-| SPEC | productCode, startTime, endTime, minC, maxC, maxExcursionSeconds | Acceptable range [minC, maxC] in °C, inclusive, finite, −100 to 100, with minC ≤ maxC. maxExcursionSeconds (integer ≥ 0) is the cumulative time out of range allowed before quality review. |
+| SPEC | productCode, startTime, endTime, minC, maxC, maxExcursionSeconds; optional synthetic | Acceptable range [minC, maxC] in °C, inclusive, finite, −100 to 100, with minC ≤ maxC. maxExcursionSeconds (integer ≥ 0) is the cumulative time out of range allowed before quality review. The interval is when the specification is effective; eventTime is when it was approved. synthetic (boolean) marks illustrative thresholds. |
 | INVENTORY | productId, location, status | status is IN_STOCK or DISPATCHED. |
 | PACKING | childId, childLevel, parentId, parentLevel, startTime, endTime; also productCode and lotId when childLevel is UNIT | childId is inside parentId during the interval. childLevel is UNIT, CARTON or PALLET; parentLevel is CARTON, PALLET or CONTAINER and must be above childLevel (UNIT < CARTON < PALLET < CONTAINER). A UNIT childId is the serialized unit's productId. childId and parentId differ. |
 
 Every identifier field (productId, productCode, lotId, containerId, sensorId, location, childId, parentId, custodianId) must contain a non-whitespace character.
+
+### Specifications and measurement quality
+
+**Precedence.** Specifications for one productCode may overlap. Inside an overlap the specification with the **latest approval (eventTime)** applies; the others do not apply there. If the latest approvals tie, the window cannot be ordered: no specification applies, and the unit shows missing specification and missing coverage. A specification's revision replaces it, as for every kind. `silver/specifications` holds the specification that applies to each product code over time. `silver/specification_overlaps` lists every overlapping window with all candidates and its resolution: LATEST_APPROVAL_APPLIES (with the winner) or UNRESOLVED_SAME_APPROVAL_TIME. Specifications are always in °C.
+
+**Synthetic thresholds.** A SPEC with `synthetic: true` is used only where the deployment sets `ALLOW_SYNTHETIC_SPECS=true` (the Compose demo and CI demo job do). Anywhere else it is ignored entirely: it neither applies nor competes with approved specifications. Gold reports `syntheticThresholds` on every assessment that used one. The demo's DRUG-DEMO thresholds are synthetic.
+
+**Calibration and uncertainty.** A reading counts as calibrated for the part of its interval (or, for a point, the instant) that a CALIBRATION of its sensor covers. Overlapping calibrations are allowed; the largest uncertainty applies. `silver/readings` lists each current reading with its normalized °C value, the value and unit as reported, whether it is a point, the calibrations that cover it, the largest uncertainty, the calibrated seconds and a status: CALIBRATED, PARTIALLY_CALIBRATED or UNCALIBRATED.
+
+**Point observations and sampling gaps.** A point reading is never extended into an interval and never fills a gap: it gives no coverage. A point outside its specification is still an observed excursion. `silver/sampling_gaps` lists every window inside a current assignment where its sensor has no interval reading. The pipeline never interpolates or holds a value between readings.
 
 ### Assignments and custody
 
@@ -97,17 +108,21 @@ Records that are not valid JSON, or that break any rule above, stay in Bronze as
 | MALFORMED_JSON | all | Not a strict JSON object (RFC 8259). Single quotes, `NaN` and `Infinity` are rejected even though Spark's reader accepts them. When this code is present, no other code is reported. |
 | INVALID_ID:eventId | all | Missing, or no non-whitespace character. |
 | INVALID_REVISION | all | Missing, not an integer, or below 1. |
-| INVALID_KIND | all | Missing or not one of the five kinds. |
+| INVALID_KIND | all | Missing or not one of the eight kinds. |
 | WRONG_TOPIC | known kinds | The kind arrived on a topic that does not own it. |
 | MISSING_EVENT_TIME | all | eventTime is missing or not an RFC 3339 timestamp. |
 | EVENT_TIME_AHEAD_OF_KAFKA | all | eventTime is more than 5 minutes after the Kafka record timestamp. |
 | INVALID_ID:&lt;field&gt; | per kind | A required identifier (sensorId, productId, productCode, lotId, containerId, location) is missing or blank. |
-| INVALID_INTERVAL | READING, PLACEMENT, ASSIGNMENT, SPEC | A bound is missing, or startTime is not before endTime. |
-| FRACTIONAL_SECONDS | READING, PLACEMENT, ASSIGNMENT, SPEC | A bound is not a whole second. |
+| INVALID_INTERVAL | READING, CALIBRATION, PLACEMENT, PACKING, ASSIGNMENT, CUSTODY, SPEC | A bound is missing, or startTime is not before endTime. A READING may have startTime = endTime (a point). |
+| FRACTIONAL_SECONDS | same kinds | A bound is not a whole second. |
 | READING_ENDS_AHEAD_OF_KAFKA | READING | endTime is more than 5 minutes after the Kafka record timestamp. |
-| OUT_OF_RANGE:temperatureC, :minC, :maxC | READING, SPEC | Missing, or outside −100 to 100 °C. |
+| AMBIGUOUS_TEMPERATURE | READING | temperatureC is given together with temperature or temperatureUnit. |
+| INVALID_UNIT:temperatureUnit | READING | temperature is given without temperatureUnit, or the unit is not C, F or K. |
+| OUT_OF_RANGE:temperatureC, :minC, :maxC | READING, SPEC | Missing, or outside −100 to 100 °C. For a reading in another unit, checked after normalization. |
+| OUT_OF_RANGE:uncertaintyC | CALIBRATION | Missing, or outside 0 to 10 °C. |
 | SPEC_MIN_ABOVE_MAX | SPEC | minC is greater than maxC. |
 | INVALID_EXCURSION_ALLOWANCE | SPEC | maxExcursionSeconds is missing, not an integer, or negative. |
+| INVALID_FLAG:synthetic | SPEC | synthetic is present but not a boolean. A mistyped flag must not turn demo thresholds into real ones. |
 | INVALID_STATUS | INVENTORY | status is missing or not IN_STOCK or DISPATCHED. |
 | INVALID_ID:custodianId | CUSTODY | Missing or blank (containerId is checked as for ASSIGNMENT). |
 | INVALID_ID:childId, :parentId | PACKING | Missing or blank. productCode and lotId are also required (INVALID_ID) when childLevel is UNIT. |
@@ -153,7 +168,10 @@ Adding an optional field or a new enum value is a minor change: update the schem
 
 - There is no manual resolution: a steward cannot yet acknowledge or close a KIND_MISMATCH or an unattributable invalid record. Those stay OPEN.
 - A field with the wrong JSON type is reported under that field's code (for example INVALID_REVISION for `"revision": "two"`), not as a separate type error.
-- Overlapping specifications are valid contracts; resolving them belongs to CC-07.
+- Specification precedence uses approval time only. There is no approval workflow, approver identity or electronic signature, and a mistaken later approval wins until it is revised.
+- Calibration certificates are not checked against a metrology system, and the uncertainty is a single symmetric value per calibration.
+- There is no maximum reading interval: a reading's interval is the gateway's assertion, so a gateway that holds one sample for a long interval is not detected.
+- Specifications are only in °C; only readings accept other units.
 - A membership needs an end time. An open-ended membership ("still on the pallet") has to be sent with a provisional end and revised later.
 - A lineage anomaly excludes every membership involved for its whole interval, not only the overlapping window. There is no steward resolution for anomalies yet; the source has to send corrected revisions.
 - An unknown field is ignored without a warning, so a misspelled optional field is silently lost.

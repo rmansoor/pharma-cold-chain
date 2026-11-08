@@ -1,0 +1,2 @@
+{"eventId": "calibration-SENSOR-1-2026", "revision": 1, "kind": "CALIBRATION", "eventTime": "2025-12-01T08:00:00Z",
+ "sensorId": "SENSOR-1", "startTime": "2025-12-01T00:00:00Z", "endTime": "2026-12-01T00:00:00Z", "uncertaintyC": 0.5}
