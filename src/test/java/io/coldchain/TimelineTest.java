@@ -7,7 +7,9 @@ import static org.junit.jupiter.api.Assertions.*;
 import static io.coldchain.ModelTest.with;
 class TimelineTest {
  static SparkSession s;
- @BeforeAll static void start(){s=Pipeline.session("cold-chain-timeline-tests");s.sparkContext().setLogLevel("ERROR");}
+ @BeforeAll static void start(){s=Pipeline.session("cold-chain-timeline-tests");s.sparkContext().setLogLevel("ERROR");
+  // Simulator.initial() carries the demo's synthetic thresholds.
+  s.conf().set(Specifications.ALLOW_SYNTHETIC,true);}
  @AfterAll static void stop(){s.stop();}
  // Indexes into Simulator.initial(): 3 assignment of SENSOR-1 to BOX-A, 6 hot reading, 10 and 11 BOX-A custody handover at 12:05.
  static Dataset<Row> valid(List<Map<String,Object>> input)throws Exception {

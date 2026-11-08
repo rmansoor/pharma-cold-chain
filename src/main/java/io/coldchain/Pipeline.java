@@ -12,7 +12,9 @@ public final class Pipeline {
    .config("spark.sql.extensions","io.delta.sql.DeltaSparkSessionExtension")
    .config("spark.sql.catalog.spark_catalog","org.apache.spark.sql.delta.catalog.DeltaCatalog")
    .config("spark.sql.session.timeZone","UTC").config("spark.sql.shuffle.partitions",2)
-   .config("spark.databricks.delta.snapshotPartitions",2).getOrCreate();
+   .config("spark.databricks.delta.snapshotPartitions",2)
+   // Demo thresholds apply only where the deployment opts in (the Compose demo does).
+   .config(Specifications.ALLOW_SYNTHETIC,Boolean.parseBoolean(System.getenv("ALLOW_SYNTHETIC_SPECS"))).getOrCreate();
   s.sparkContext().setLogLevel("WARN");return s;
  }
  static void merge(SparkSession s, Dataset<Row> data, String path, String condition) {
@@ -75,6 +77,10 @@ public final class Pipeline {
   snapshot(timeline,DATA+"/silver/timeline_anomalies");
   snapshot(history,DATA+"/silver/timelines");
   snapshot(Timelines.invalidations(history,units),DATA+"/silver/mapping_invalidations");
+  snapshot(Specifications.effective(current),DATA+"/silver/specifications");
+  snapshot(Specifications.overlaps(current),DATA+"/silver/specification_overlaps");
+  snapshot(Measurements.readings(current),DATA+"/silver/readings");
+  snapshot(Measurements.samplingGaps(current),DATA+"/silver/sampling_gaps");
   Dataset<Row> assessed=Model.assessments(s,current).withColumn("snapshotId",lit(id)).cache();
   merge(s,assessed,DATA+"/gold/assessment_history","t.productId=s.productId AND t.snapshotId=s.snapshotId");
   // Manifest is written last. Readers must use history filtered by a committed snapshotId.

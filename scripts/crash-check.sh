@@ -18,7 +18,7 @@ examples=$(ls contracts/examples/*.json | wc -l | tr -d ' ')
 for f in contracts/examples/*.json; do
  line=$(tr -d '\n' <"$f")
  case $(sed -E 's/.*"kind": *"([A-Z]+)".*/\1/' <<<"$line") in
-  READING) topic=coldchain.sensors;; SPEC) topic=coldchain.specifications;; INVENTORY) topic=coldchain.inventory;; *) topic=coldchain.traceability;;
+  READING|CALIBRATION) topic=coldchain.sensors;; SPEC) topic=coldchain.specifications;; INVENTORY) topic=coldchain.inventory;; *) topic=coldchain.traceability;;
  esac
  echo "$line" | dc exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic "$topic"
 done

@@ -31,9 +31,15 @@ public final class VerifyDemo {
     // A handover at 12:05 leaves no custody gap in BOX-A; BOX-B has none recorded.
     boolean custody=now.filter("productId='UNIT-A' AND missingCustodySeconds=0 AND size(custodianIds)=2").count()==1
      && now.filter("productId='UNIT-B' AND missingCustodySeconds=600").count()==1;
-    if(before&&a&&b&&nested&&dlq&&resolved&&invalidated&&custody) {
+    // The demo's thresholds are synthetic and flagged as such; SENSOR-1's calibration covers the hot reading.
+    boolean quality=now.filter("productId='UNIT-B' AND syntheticThresholds AND calibrationIds=array('calibration-1') AND uncalibratedSeconds=0 "
+     +"AND assessmentReasons[0]='EXCURSION_ABOVE_ALLOWANCE' AND ruleVersion='exposure-v4'").count()==1
+     && DeltaTable.isDeltaTable(s,base+"/silver/readings") && s.read().format("delta").load(base+"/silver/readings")
+     .filter("eventId='reading-hot' AND calibration='CALIBRATED' AND uncertaintyC=0.5").count()==1
+     && s.read().format("delta").load(base+"/silver/specifications").filter("specificationId='spec' AND synthetic").count()==1;
+    if(before&&a&&b&&nested&&dlq&&resolved&&invalidated&&custody&&quality) {
      now.orderBy("productId").show(false);
-     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision.");s.stop();return;
+     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; synthetic thresholds flagged and calibrated reading used; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision.");s.stop();return;
     }
    }
    Thread.sleep(3000);

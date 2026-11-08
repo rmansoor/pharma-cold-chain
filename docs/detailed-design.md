@@ -39,6 +39,10 @@ Product specifications are operational input, not static Java constants. Overlap
 | silver/timeline_anomalies | rebuilt snapshot | SENSOR_IN_TWO_CONTAINERS and CUSTODY_OVERLAP with subject, event IDs and window |
 | silver/mapping_invalidations | rebuilt snapshot | Per assignment correction (fromRevision → toRevision), the units mapped by the FORMER and the REVISED revision, with sensor, container and window |
 | silver/unit_containers | rebuilt snapshot | Resolved container interval per serialized unit, with productCode, lotId, path (unit → … → container) and lineageIds (the membership events used) |
+| silver/specifications | rebuilt snapshot | The specification that applies to each product code over time after precedence (latest approval wins), with thresholds, allowance and the synthetic flag |
+| silver/specification_overlaps | rebuilt snapshot | Every window where specifications overlap: all candidates, the one that applies (or none) and the resolution |
+| silver/readings | eventId / rebuilt snapshot | Each current reading: normalized °C, reported value and unit, point flag, covering calibrations, largest uncertainty, calibrated seconds and calibration status |
+| silver/sampling_gaps | rebuilt snapshot | Windows inside each current assignment with no interval reading from its sensor |
 | gold/assessment_history | productId, snapshotId / insert-only MERGE | Coverage, excursion, missing data, rule, inventory and evidence IDs |
 | gold/commits | snapshotId / insert-only MERGE | Publication timestamp and product count |
 | checkpoints/medallion | Spark-managed | Kafka progress and micro-batch identity |
@@ -54,7 +58,9 @@ For a candidate resolved placement p, matching assignment a, reading r and speci
 segmentStart = max(p.start, a.start, r.start, s.start)
 segmentEnd = min(p.end, a.end, r.end, s.end)
 
-Retain a segment only when segmentStart < segmentEnd. Match p.containerId = a.containerId, a.sensorId = r.sensorId and p.productCode = s.productCode. Exposure is outside [minC,maxC]; the endpoints are inclusive acceptable bounds in the illustrative rule.
+Retain a segment only when segmentStart < segmentEnd. Match p.containerId = a.containerId, a.sensorId = r.sensorId and p.productCode = s.productCode, where s is the specification that applies after precedence (Specifications.java). Exposure is outside [minC,maxC]; the endpoints are inclusive acceptable bounds. A point reading (start = end) never forms a segment; it is matched separately to the placement, assignment and specification that contain its instant, and contributes no seconds.
+
+Further interval sets measure quality: CALIBRATED (segments intersected with a calibration of the reading's sensor), POSSIBLE (UNSAFE, plus calibrated time within the calibration's uncertainty of minC or maxC), LOCATED (resolved placements), SPECIFIED (placements intersected with an applicable specification) and CUSTODY. uncalibratedSeconds = COVERAGE − CALIBRATED, unspecifiedSeconds = LOCATED − SPECIFIED and missingCustodySeconds = LOCATED − CUSTODY.
 
 Compute three interval sets per product: EXPECTED from the unit's direct memberships (including ones excluded by an anomaly, and time when its carton is not yet on a pallet), so unresolved time counts as missing coverage; COVERAGE from valid measured segments; UNSAFE from segments whose temperature is outside the matching specification. For each set, sort intervals, compute maximum prior end, start a new island only when the next start exceeds the prior end, and sum each merged island's duration. Touching intervals form one island. This prevents duplicate or overlapping evidence from multiplying duration.
 
@@ -62,11 +68,22 @@ coveredSeconds can never exceed expectedSeconds under valid intersection logic. 
 
 ## 5. Assessment semantics
 
-- QUALITY_REVIEW: excursionSeconds exceeds the allowed threshold derived from matching segments. This takes precedence even if some coverage is missing.
-- INSUFFICIENT_DATA: coverage is incomplete or no matching specification/evidence supports evaluation.
-- NO_OBSERVED_EXCURSION: complete modeled coverage and no threshold breach. This is not a certificate of product quality or a release authorization.
+`assessmentReasons` lists, in this order, every reason that keeps a unit from NO_OBSERVED_EXCURSION:
 
-Inventory is selected by newest eventTime, then revision, then eventId. It is latest known, not necessarily current physical location. UNKNOWN is used when inventory is absent. A stale-inventory indicator is planned. Gold contains the rule version exposure-v3 (exposure through resolved packaging lineage, excluding contradictory sensor assignments), missingCustodySeconds and custodianIds, and sorted reading, assignment, specification and lineage (membership) event IDs. Without packaging or assignment anomalies, exposure-v3 gives the same numbers as exposure-v1. It currently lacks source revision numbers and lot/product-code fields in the assessment row; exact versioned evidence and lot-level serving are explicit backlog items.
+| Reason | When |
+|---|---|
+| EXCURSION_ABOVE_ALLOWANCE | excursionSeconds exceeds the allowance (the smallest maxExcursionSeconds among matched specifications) |
+| OUT_OF_RANGE_POINT | A point reading at an instant the unit was measured is outside the specification: an observed excursion of unknown duration |
+| MISSING_COVERAGE | coveredSeconds < expectedSeconds |
+| MISSING_SPECIFICATION | Part of the unit's located time has no applicable specification (none, unresolved tie, or synthetic where not allowed) |
+| UNCALIBRATED_MEASUREMENT | Some covered time is measured only by sensors without a valid calibration |
+| WITHIN_MEASUREMENT_UNCERTAINTY | Excursion is within the allowance, but possibleExcursionSeconds (out of range or within uncertainty of a limit) exceeds it |
+
+- QUALITY_REVIEW: EXCURSION_ABOVE_ALLOWANCE or OUT_OF_RANGE_POINT. This takes precedence even if some coverage is missing. Uncalibrated out-of-range readings count as exposure: missing calibration never hides a risk.
+- INSUFFICIENT_DATA: any other reason, or no matched specification at all. The measurements cannot show that the unit stayed in range.
+- NO_OBSERVED_EXCURSION: no reason: complete, specified and calibrated coverage, with no excursion beyond the allowance even allowing for uncertainty. This is not a certificate of product quality or a release authorization.
+
+Inventory is selected by newest eventTime, then revision, then eventId. It is latest known, not necessarily current physical location. UNKNOWN is used when inventory is absent. A stale-inventory indicator is planned. Gold contains the rule version exposure-v4 (exposure through resolved packaging lineage, excluding contradictory sensor assignments, with specification precedence, calibration, uncertainty and point observations), missingCustodySeconds and custodianIds, possibleExcursionSeconds, uncalibratedSeconds, unspecifiedSeconds, outOfRangePoints, calibrationIds, maxUncertaintyC, syntheticThresholds, assessmentReasons, and sorted reading, assignment, specification and lineage (membership) event IDs. exposure-v4 gives the same excursion and coverage numbers as exposure-v3 when specifications do not overlap and there are no point readings; the assessment can be stricter, because NO_OBSERVED_EXCURSION now also needs calibrated measurement and a margin for uncertainty. It currently lacks source revision numbers and lot/product-code fields in the assessment row; exact versioned evidence and lot-level serving are explicit backlog items.
 
 assessmentHash covers principal metrics, assessment, inventory, evidence IDs and ruleVersion. It is a content convenience, not the unique publication key or a complete provenance digest. snapshotId is the Spark batch ID within one retained checkpoint lineage.
 

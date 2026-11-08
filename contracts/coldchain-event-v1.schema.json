@@ -8,7 +8,7 @@
   "properties": {
     "eventId": {"$ref": "#/$defs/id", "description": "Globally unique across all kinds; keeps one kind across revisions"},
     "revision": {"type": "integer", "minimum": 1, "description": "Correction counter; the highest revision supersedes. A retry of the same eventId and revision must carry the same semantic payload"},
-    "kind": {"enum": ["READING", "PLACEMENT", "ASSIGNMENT", "SPEC", "INVENTORY", "PACKING", "CUSTODY"]},
+    "kind": {"enum": ["READING", "PLACEMENT", "ASSIGNMENT", "SPEC", "INVENTORY", "PACKING", "CUSTODY", "CALIBRATION"]},
     "eventTime": {"$ref": "#/$defs/time", "description": "When the source recorded the fact; at most 5 minutes after the Kafka record timestamp"},
     "productId": {"$ref": "#/$defs/id", "description": "Serialized saleable unit"},
     "productCode": {"$ref": "#/$defs/id", "description": "Product (SKU) code that specifications apply to"},
@@ -18,6 +18,10 @@
     "startTime": {"$ref": "#/$defs/second"},
     "endTime": {"$ref": "#/$defs/second"},
     "temperatureC": {"$ref": "#/$defs/celsius", "description": "Degrees Celsius, assumed uniform over the reading interval"},
+    "temperature": {"type": "number", "description": "Reading in temperatureUnit, as an alternative to temperatureC; normalized to °C, which must be -100 to 100 (enforced in code)"},
+    "temperatureUnit": {"enum": ["C", "F", "K"], "description": "Unit of temperature"},
+    "uncertaintyC": {"type": "number", "minimum": 0, "maximum": 10, "description": "Expanded measurement uncertainty of the calibrated sensor, in °C (±)"},
+    "synthetic": {"type": "boolean", "description": "SPEC only: illustrative thresholds, used only where the deployment allows synthetic specifications"},
     "minC": {"$ref": "#/$defs/celsius", "description": "Lowest acceptable temperature, inclusive"},
     "maxC": {"$ref": "#/$defs/celsius", "description": "Highest acceptable temperature, inclusive; must be >= minC"},
     "maxExcursionSeconds": {"type": "integer", "minimum": 0, "description": "Seconds of cumulative excursion allowed before quality review"},
@@ -30,7 +34,8 @@
     "custodianId": {"$ref": "#/$defs/id", "description": "Organization or site responsible for the container"}
   },
   "allOf": [
-    {"if": {"properties": {"kind": {"const": "READING"}}}, "then": {"required": ["sensorId", "startTime", "endTime", "temperatureC"], "description": "Topic coldchain.sensors; endTime at most 5 minutes after the Kafka record timestamp"}},
+    {"if": {"properties": {"kind": {"const": "READING"}}}, "then": {"required": ["sensorId", "startTime", "endTime"], "oneOf": [{"required": ["temperatureC"], "not": {"anyOf": [{"required": ["temperature"]}, {"required": ["temperatureUnit"]}]}}, {"required": ["temperature", "temperatureUnit"], "not": {"required": ["temperatureC"]}}], "description": "Topic coldchain.sensors; endTime at most 5 minutes after the Kafka record timestamp; startTime = endTime is a point observation"}},
+    {"if": {"properties": {"kind": {"const": "CALIBRATION"}}}, "then": {"required": ["sensorId", "startTime", "endTime", "uncertaintyC"], "description": "Topic coldchain.sensors; the calibration is valid during the interval"}},
     {"if": {"properties": {"kind": {"const": "PLACEMENT"}}}, "then": {"required": ["productId", "productCode", "lotId", "containerId", "startTime", "endTime"], "description": "Topic coldchain.traceability"}},
     {"if": {"properties": {"kind": {"const": "ASSIGNMENT"}}}, "then": {"required": ["sensorId", "containerId", "startTime", "endTime"], "description": "Topic coldchain.traceability"}},
     {"if": {"properties": {"kind": {"const": "SPEC"}}}, "then": {"required": ["productCode", "startTime", "endTime", "minC", "maxC", "maxExcursionSeconds"], "description": "Topic coldchain.specifications"}},
