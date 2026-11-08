@@ -12,15 +12,16 @@ public final class Model {
   .add("startTime","timestamp").add("endTime","timestamp").add("temperatureC","double")
   .add("minC","double").add("maxC","double").add("maxExcursionSeconds","long")
   .add("location","string").add("status","string")
-  .add("childId","string").add("childLevel","string").add("parentId","string").add("parentLevel","string");
+  .add("childId","string").add("childLevel","string").add("parentId","string").add("parentLevel","string")
+  .add("custodianId","string");
  private Model() {}
  static final String SKEW="kafkaTime + INTERVAL 5 MINUTES";
- static final String KINDS="kind IN ('READING','PLACEMENT','ASSIGNMENT','SPEC','INVENTORY','PACKING')";
- static final String INTERVAL_KINDS="kind IN ('READING','PLACEMENT','ASSIGNMENT','SPEC','PACKING')";
+ static final String KINDS="kind IN ('READING','PLACEMENT','ASSIGNMENT','SPEC','INVENTORY','PACKING','CUSTODY')";
+ static final String INTERVAL_KINDS="kind IN ('READING','PLACEMENT','ASSIGNMENT','SPEC','PACKING','CUSTODY')";
  static final String UNIT_PACKING="(kind = 'PACKING' AND childLevel = 'UNIT')";
  static String rank(String level){return "array_position(array('UNIT','CARTON','PALLET','CONTAINER'),"+level+")";}
  static final String TOPIC="CASE kind WHEN 'READING' THEN 'coldchain.sensors' WHEN 'PLACEMENT' THEN 'coldchain.traceability' "
-  +"WHEN 'ASSIGNMENT' THEN 'coldchain.traceability' WHEN 'PACKING' THEN 'coldchain.traceability' WHEN 'SPEC' THEN 'coldchain.specifications' WHEN 'INVENTORY' THEN 'coldchain.inventory' END";
+  +"WHEN 'ASSIGNMENT' THEN 'coldchain.traceability' WHEN 'PACKING' THEN 'coldchain.traceability' WHEN 'CUSTODY' THEN 'coldchain.traceability' WHEN 'SPEC' THEN 'coldchain.specifications' WHEN 'INVENTORY' THEN 'coldchain.inventory' END";
  // A rule applies when its condition holds and yields its reason code when the check is false or unknown.
  static String rule(String code,String when,String ok){return "IF(coalesce("+when+",false) AND NOT coalesce("+ok+",false),'"+code+"',NULL)";}
  // Identifiers need a non-whitespace character; trim() alone would let tabs and newlines through.
@@ -34,8 +35,8 @@ public final class Model {
   rule("MISSING_EVENT_TIME","true","eventTime IS NOT NULL"),rule("EVENT_TIME_AHEAD_OF_KAFKA","true","eventTime IS NULL OR eventTime <= "+SKEW),
   id("sensorId","kind IN ('READING','ASSIGNMENT')"),id("productId","kind IN ('PLACEMENT','INVENTORY')"),
   id("productCode","kind IN ('PLACEMENT','SPEC') OR "+UNIT_PACKING),id("lotId","kind = 'PLACEMENT' OR "+UNIT_PACKING),
-  id("containerId","kind IN ('PLACEMENT','ASSIGNMENT')"),id("location","kind = 'INVENTORY'"),
-  id("childId","kind = 'PACKING'"),id("parentId","kind = 'PACKING'"),
+  id("containerId","kind IN ('PLACEMENT','ASSIGNMENT','CUSTODY')"),id("location","kind = 'INVENTORY'"),
+  id("custodianId","kind = 'CUSTODY'"),id("childId","kind = 'PACKING'"),id("parentId","kind = 'PACKING'"),
   rule("INVALID_LEVEL:childLevel","kind = 'PACKING'","childLevel IN ('UNIT','CARTON','PALLET')"),
   rule("INVALID_LEVEL:parentLevel","kind = 'PACKING'","parentLevel IN ('CARTON','PALLET','CONTAINER')"),
   rule("PARENT_NOT_ABOVE_CHILD","kind = 'PACKING' AND childLevel IN ('UNIT','CARTON','PALLET') AND parentLevel IN ('CARTON','PALLET','CONTAINER')",
@@ -102,11 +103,18 @@ public final class Model {
    .filter("rn=1").drop("rn","valid","reasons");
  }
  public static Dataset<Row> assessments(SparkSession spark, Dataset<Row> events) {
+  // Materialize once: lineage, timelines and the segment joins below each read events several times, and without this
+  // Spark re-plans the whole parse for every reference.
+  events=events.localCheckpoint();
   events.createOrReplaceTempView("events");
   // Units are expected wherever a membership puts them; they are covered only through a chain that reaches a container.
   Dataset<Row> edges=Lineage.edges(events);
   Lineage.unitContainers(edges,Lineage.anomalies(edges)).createOrReplaceTempView("placements");
   edges.filter("childLevel = 'UNIT'").createOrReplaceTempView("units");
+  // Assignments and custody that contradict each other at some instant are left out (Timelines.anomalies).
+  Dataset<Row> timeline=Timelines.anomalies(events);
+  Timelines.usable(events,"ASSIGNMENT",timeline).createOrReplaceTempView("assignments");
+  Timelines.usable(events,"CUSTODY",timeline).createOrReplaceTempView("custody");
   // Split intervals at every resolved container interval, sensor assignment, reading and specification boundary.
   spark.sql("""
    SELECT p.productId, p.lineageIds, p.lotId, p.productCode, r.eventId readingId,
@@ -115,12 +123,17 @@ public final class Model {
     least(p.endTime,a.endTime,r.endTime,s.endTime) segmentEnd,
     r.temperatureC, s.minC, s.maxC, s.maxExcursionSeconds
    FROM placements p
-   JOIN events a ON a.kind='ASSIGNMENT' AND a.containerId=p.containerId
+   JOIN assignments a ON a.containerId=p.containerId
    JOIN events r ON r.kind='READING' AND r.sensorId=a.sensorId
    JOIN events s ON s.kind='SPEC' AND s.productCode=p.productCode
    WHERE greatest(p.startTime,a.startTime,r.startTime,s.startTime)
        < least(p.endTime,a.endTime,r.endTime,s.endTime)
    """).createOrReplaceTempView("segments");
+  spark.sql("""
+   SELECT p.productId, c.custodianId, greatest(p.startTime,c.startTime) segmentStart, least(p.endTime,c.endTime) segmentEnd
+   FROM placements p JOIN custody c ON c.containerId=p.containerId
+   WHERE greatest(p.startTime,c.startTime) < least(p.endTime,c.endTime)
+   """).createOrReplaceTempView("custodySegments");
   // Union intervals before summing: overlapping readings must not inflate exposure or coverage.
   spark.sql("""
    SELECT productId, 'COVERAGE' metric, segmentStart, segmentEnd FROM segments
@@ -129,6 +142,10 @@ public final class Model {
    WHERE temperatureC < minC OR temperatureC > maxC
    UNION ALL
    SELECT childId, 'EXPECTED', startTime, endTime FROM units
+   UNION ALL
+   SELECT productId, 'LOCATED', startTime, endTime FROM placements
+   UNION ALL
+   SELECT productId, 'CUSTODY', segmentStart, segmentEnd FROM custodySegments
    """).createOrReplaceTempView("intervals");
   spark.sql("""
    WITH previous AS (
@@ -149,7 +166,8 @@ public final class Model {
   spark.sql("""
    SELECT productId, sum(IF(metric='EXPECTED',seconds,0)) expectedSeconds,
     sum(IF(metric='COVERAGE',seconds,0)) coveredSeconds,
-    sum(IF(metric='UNSAFE',seconds,0)) excursionSeconds FROM durations GROUP BY productId
+    sum(IF(metric='UNSAFE',seconds,0)) excursionSeconds,
+    sum(IF(metric='LOCATED',seconds,0))-sum(IF(metric='CUSTODY',seconds,0)) missingCustodySeconds FROM durations GROUP BY productId
    """).createOrReplaceTempView("metrics");
   spark.sql("""
    SELECT productId, sort_array(collect_set(readingId)) readingIds,
@@ -159,6 +177,8 @@ public final class Model {
     min(maxExcursionSeconds) allowedExcursionSeconds
    FROM segments GROUP BY productId
    """).createOrReplaceTempView("evidence");
+  spark.sql("SELECT productId, sort_array(collect_set(custodianId)) custodianIds FROM custodySegments GROUP BY productId")
+   .createOrReplaceTempView("custodians");
   spark.sql("""
    SELECT productId, location, status FROM (
     SELECT *,row_number() OVER(PARTITION BY productId ORDER BY eventTime DESC,revision DESC,eventId DESC) n
@@ -167,16 +187,17 @@ public final class Model {
    """).createOrReplaceTempView("inventory");
   return spark.sql("""
    SELECT m.*, coalesce(e.allowedExcursionSeconds,0L) allowedExcursionSeconds,
-    e.readingIds,e.assignmentIds,e.specificationIds,e.lineageIds,
+    e.readingIds,e.assignmentIds,e.specificationIds,e.lineageIds,c.custodianIds,
     coalesce(i.location,'UNKNOWN') location,coalesce(i.status,'UNKNOWN') inventoryStatus,
     m.expectedSeconds-m.coveredSeconds missingSeconds,
     CASE WHEN m.excursionSeconds > e.allowedExcursionSeconds THEN 'QUALITY_REVIEW'
      WHEN m.coveredSeconds < m.expectedSeconds OR e.allowedExcursionSeconds IS NULL THEN 'INSUFFICIENT_DATA'
      ELSE 'NO_OBSERVED_EXCURSION' END assessment,
-    'exposure-v2' ruleVersion
-   FROM metrics m LEFT JOIN evidence e USING(productId) LEFT JOIN inventory i USING(productId)
+    'exposure-v3' ruleVersion
+   FROM metrics m LEFT JOIN evidence e USING(productId) LEFT JOIN inventory i USING(productId) LEFT JOIN custodians c USING(productId)
    """).withColumn("assessmentHash",sha2(to_json(struct(col("expectedSeconds"),col("coveredSeconds"),
     col("excursionSeconds"),col("allowedExcursionSeconds"),col("assessment"),col("location"),
-    col("inventoryStatus"),col("readingIds"),col("assignmentIds"),col("specificationIds"),col("lineageIds"),col("ruleVersion"))),256));
+    col("inventoryStatus"),col("readingIds"),col("assignmentIds"),col("specificationIds"),col("lineageIds"),
+    col("missingCustodySeconds"),col("custodianIds"),col("ruleVersion"))),256));
  }
 }

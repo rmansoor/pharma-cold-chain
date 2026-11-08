@@ -8,7 +8,7 @@
   "properties": {
     "eventId": {"$ref": "#/$defs/id", "description": "Globally unique across all kinds; keeps one kind across revisions"},
     "revision": {"type": "integer", "minimum": 1, "description": "Correction counter; the highest revision supersedes. A retry of the same eventId and revision must carry the same semantic payload"},
-    "kind": {"enum": ["READING", "PLACEMENT", "ASSIGNMENT", "SPEC", "INVENTORY", "PACKING"]},
+    "kind": {"enum": ["READING", "PLACEMENT", "ASSIGNMENT", "SPEC", "INVENTORY", "PACKING", "CUSTODY"]},
     "eventTime": {"$ref": "#/$defs/time", "description": "When the source recorded the fact; at most 5 minutes after the Kafka record timestamp"},
     "productId": {"$ref": "#/$defs/id", "description": "Serialized saleable unit"},
     "productCode": {"$ref": "#/$defs/id", "description": "Product (SKU) code that specifications apply to"},
@@ -26,7 +26,8 @@
     "childId": {"$ref": "#/$defs/id", "description": "The packed item: a serialized unit (its productId), carton or pallet"},
     "childLevel": {"enum": ["UNIT", "CARTON", "PALLET"]},
     "parentId": {"$ref": "#/$defs/id", "description": "The packaging that holds the child"},
-    "parentLevel": {"enum": ["CARTON", "PALLET", "CONTAINER"], "description": "Must be above childLevel in UNIT < CARTON < PALLET < CONTAINER"}
+    "parentLevel": {"enum": ["CARTON", "PALLET", "CONTAINER"], "description": "Must be above childLevel in UNIT < CARTON < PALLET < CONTAINER"},
+    "custodianId": {"$ref": "#/$defs/id", "description": "Organization or site responsible for the container"}
   },
   "allOf": [
     {"if": {"properties": {"kind": {"const": "READING"}}}, "then": {"required": ["sensorId", "startTime", "endTime", "temperatureC"], "description": "Topic coldchain.sensors; endTime at most 5 minutes after the Kafka record timestamp"}},
@@ -34,6 +35,7 @@
     {"if": {"properties": {"kind": {"const": "ASSIGNMENT"}}}, "then": {"required": ["sensorId", "containerId", "startTime", "endTime"], "description": "Topic coldchain.traceability"}},
     {"if": {"properties": {"kind": {"const": "SPEC"}}}, "then": {"required": ["productCode", "startTime", "endTime", "minC", "maxC", "maxExcursionSeconds"], "description": "Topic coldchain.specifications"}},
     {"if": {"properties": {"kind": {"const": "INVENTORY"}}}, "then": {"required": ["productId", "location", "status"], "description": "Topic coldchain.inventory"}},
+    {"if": {"properties": {"kind": {"const": "CUSTODY"}}}, "then": {"required": ["containerId", "custodianId", "startTime", "endTime"], "description": "Topic coldchain.traceability"}},
     {"if": {"properties": {"kind": {"const": "PACKING"}}}, "then": {"required": ["childId", "childLevel", "parentId", "parentLevel", "startTime", "endTime"], "description": "Topic coldchain.traceability; childId differs from parentId and parentLevel is above childLevel (both enforced in code)"}},
     {"if": {"properties": {"kind": {"const": "PACKING"}, "childLevel": {"const": "UNIT"}}, "required": ["childLevel"]}, "then": {"required": ["productCode", "lotId"], "description": "A packed unit carries its product code and lot"}}
   ],

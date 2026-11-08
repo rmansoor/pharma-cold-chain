@@ -24,9 +24,16 @@ public final class VerifyDemo {
     boolean resolved=DeltaTable.isDeltaTable(s,base+"/silver/case_log") && s.read().format("delta").load(base+"/silver/case_log")
      .filter("eventId='inventory-C' AND caseType='PAYLOAD_MISMATCH'").groupBy().pivot("status",java.util.List.of("OPEN","RESOLVED")).agg(min("snapshotId"))
      .filter("OPEN < RESOLVED").count()==1;
-    if(before&&a&&b&&nested&&dlq&&resolved) {
+    // The assignment correction lists the units it took exposure from (BOX-A) and gave it to (BOX-B).
+    boolean invalidated=DeltaTable.isDeltaTable(s,base+"/silver/mapping_invalidations") && s.read().format("delta").load(base+"/silver/mapping_invalidations")
+     .filter("assignmentId='assign'").selectExpr("concat(side,':',productId) v").distinct().orderBy("v").as(Encoders.STRING()).collectAsList()
+     .equals(java.util.List.of("FORMER:UNIT-A","FORMER:UNIT-D","REVISED:UNIT-B"));
+    // A handover at 12:05 leaves no custody gap in BOX-A; BOX-B has none recorded.
+    boolean custody=now.filter("productId='UNIT-A' AND missingCustodySeconds=0 AND size(custodianIds)=2").count()==1
+     && now.filter("productId='UNIT-B' AND missingCustodySeconds=600").count()==1;
+    if(before&&a&&b&&nested&&dlq&&resolved&&invalidated&&custody) {
      now.orderBy("productId").show(false);
-     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision.");s.stop();return;
+     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision.");s.stop();return;
     }
    }
    Thread.sleep(3000);

@@ -69,7 +69,12 @@ public final class Pipeline {
   Dataset<Row> edges=Lineage.edges(current).cache(),anomalies=Lineage.anomalies(edges).cache();
   snapshot(Lineage.memberships(edges,anomalies),DATA+"/silver/memberships");
   snapshot(anomalies,DATA+"/silver/lineage_anomalies");
-  snapshot(Lineage.unitContainers(edges,anomalies),DATA+"/silver/unit_containers");
+  Dataset<Row> units=Lineage.unitContainers(edges,anomalies).cache();
+  snapshot(units,DATA+"/silver/unit_containers");
+  Dataset<Row> timeline=Timelines.anomalies(current).cache(),history=Timelines.history(good,timeline).cache();
+  snapshot(timeline,DATA+"/silver/timeline_anomalies");
+  snapshot(history,DATA+"/silver/timelines");
+  snapshot(Timelines.invalidations(history,units),DATA+"/silver/mapping_invalidations");
   Dataset<Row> assessed=Model.assessments(s,current).withColumn("snapshotId",lit(id)).cache();
   merge(s,assessed,DATA+"/gold/assessment_history","t.productId=s.productId AND t.snapshotId=s.snapshotId");
   // Manifest is written last. Readers must use history filtered by a committed snapshotId.
@@ -77,7 +82,7 @@ public final class Pipeline {
    lit(assessed.count()).alias("products"));
   merge(s,manifest,DATA+"/gold/commits","t.snapshotId=s.snapshotId");
   System.out.println("COMMITTED snapshot="+id+" products="+assessed.count());
-  assessed.unpersist();edges.unpersist();anomalies.unpersist();parsed.unpersist();
+  assessed.unpersist();edges.unpersist();anomalies.unpersist();units.unpersist();timeline.unpersist();history.unpersist();parsed.unpersist();
  }
  public static void main(String[] args)throws Exception {
   SparkSession s=session("Cold-chain medallion pipeline");

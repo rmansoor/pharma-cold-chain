@@ -55,12 +55,12 @@ class ModelTest {
   try(var files=java.nio.file.Files.list(java.nio.file.Path.of("contracts/examples"))) {for(var f:files.sorted().toList())json.add(java.nio.file.Files.readString(f));}
   Dataset<Row> parsed=parseRaw(json,expr(TOPIC));
   assertEquals(0,parsed.filter("NOT valid").count());
-  assertEquals(Set.of("READING","PLACEMENT","ASSIGNMENT","SPEC","INVENTORY","PACKING"),
+  assertEquals(Set.of("READING","PLACEMENT","ASSIGNMENT","SPEC","INVENTORY","PACKING","CUSTODY"),
    new HashSet<>(parsed.select("kind").as(Encoders.STRING()).collectAsList()));
  }
  List<String> reasons(String json,Column topic){Row r=parseRaw(List.of(json),topic).first();return r.getList(r.fieldIndex("reasons"));}
  @Test void contractViolationsAreInvalidWithReasonCodes()throws Exception {
-  // Indexes into Simulator.initial(): 0 spec, 1 placement, 3 assignment, 4 inventory, 6 reading, 7 unit packing, 8 carton packing.
+  // Indexes into Simulator.initial(): 0 spec, 1 placement, 3 assignment, 4 inventory, 6 reading, 7 unit packing, 8 carton packing, 10 custody.
   String reading=Simulator.JSON.writeValueAsString(Simulator.initial().get(6)),spec=Simulator.JSON.writeValueAsString(Simulator.initial().get(0));
   Map<String,Object[]> cases=new LinkedHashMap<>();
   cases.put("blank eventId",new Object[]{with(6,"eventId","  "),"INVALID_ID:eventId"});
@@ -96,6 +96,8 @@ class ModelTest {
   cases.put("carton in itself",new Object[]{with(8,"parentId","CARTON-1"),"SELF_CONTAINED"});
   cases.put("packed unit without lot",new Object[]{with(7,"lotId",null),"INVALID_ID:lotId"});
   cases.put("packing without interval",new Object[]{with(8,"startTime",null),"INVALID_INTERVAL"});
+  cases.put("blank custodianId",new Object[]{with(10,"custodianId"," "),"INVALID_ID:custodianId"});
+  cases.put("custody without container",new Object[]{with(10,"containerId",null),"INVALID_ID:containerId"});
   cases.put("malformed JSON",new Object[]{"{broken","MALFORMED_JSON"});
   cases.put("JSON array",new Object[]{"[1,2]","MALFORMED_JSON"});
   for(var c:cases.entrySet()) {

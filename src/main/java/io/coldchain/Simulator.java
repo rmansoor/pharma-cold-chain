@@ -26,7 +26,10 @@ public final class Simulator {
    event("pack-unit-D","PACKING","childId","UNIT-D","childLevel","UNIT","productCode","DRUG-DEMO","lotId","LOT-1",
     "parentId","CARTON-1","parentLevel","CARTON","startTime",a,"endTime",b),
    event("pack-carton-1","PACKING","childId","CARTON-1","childLevel","CARTON","parentId","PALLET-1","parentLevel","PALLET","startTime",a,"endTime",b),
-   event("pack-pallet-1","PACKING","childId","PALLET-1","childLevel","PALLET","parentId","BOX-A","parentLevel","CONTAINER","startTime",a,"endTime",b));
+   event("pack-pallet-1","PACKING","childId","PALLET-1","childLevel","PALLET","parentId","BOX-A","parentLevel","CONTAINER","startTime",a,"endTime",b),
+   // BOX-A changes hands at 12:05; BOX-B has no recorded custodian.
+   event("custody-A-1","CUSTODY","containerId","BOX-A","custodianId","CARRIER-1","startTime",a,"endTime","2026-01-01T12:05:00Z"),
+   event("custody-A-2","CUSTODY","containerId","BOX-A","custodianId","WAREHOUSE-1","startTime","2026-01-01T12:05:00Z","endTime",b));
  }
  // Declares the producing system so Bronze provenance does not fall back to the topic owner.
  static ProducerRecord<String,String> record(String topic,String key,String value) {
