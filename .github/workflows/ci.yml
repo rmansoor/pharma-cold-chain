@@ -23,14 +23,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     # The demo's thresholds are synthetic; only the demo deployment may use them.
-    env: {ALLOW_SYNTHETIC_SPECS: 'true'}
+    # CODE_VERSION is recorded in every Gold manifest.
+    env: {ALLOW_SYNTHETIC_SPECS: 'true', CODE_VERSION: '${{ github.sha }}'}
     steps:
       - uses: actions/checkout@v4
       - run: docker compose up -d --build pipeline
       - run: docker compose --profile demo run --rm simulator
       - run: docker compose --profile demo run --rm verify
       - run: scripts/restart-check.sh pharma-cold-chain
-      - name: Crash after Bronze commit, then replay
+      - name: Crash after Bronze commit and before a Gold manifest, then replay
         run: docker compose down -v && scripts/crash-check.sh
       - if: failure()
         run: |

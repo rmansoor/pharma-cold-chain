@@ -47,7 +47,7 @@ Product specifications are operational input, not static Java constants. Overlap
 | gold/exposure_intervals | productId, snapshotId, metric, startTime / insert-only MERGE | The disjoint intervals behind every Gold duration (section 4) and each out-of-range point, with seconds, ruleVersion and the exact revision of every source event: kind, eventId, revision, payloadHash, topic, partition, offset |
 | gold/assessment_history | productId, snapshotId / insert-only MERGE | Coverage, excursion, missing data, rule, inventory, evidence IDs and sourceRevisions |
 | gold/assessment_policies | policyVersion / insert-only MERGE | Each policy version: states with meaning and impliesRelease (always false), reasons with condition and state, flags, inventory age limit, ruleVersion and assessment scope |
-| gold/commits | snapshotId / insert-only MERGE | Publication timestamp and product count |
+| gold/commits | snapshotId / insert-only MERGE | The manifest: one row per published snapshot with lineage and run identity, code, rule and policy versions, source high-watermarks, input and output table versions, and evidence and assessment digests (section 6) |
 | checkpoints/medallion | Spark-managed | Kafka progress and micro-batch identity |
 
 No table is automatically partitioned in the demo. Production partitioning/clustering must be chosen using product cardinality, date access patterns and measured file sizes. Over-partitioning by product ID should be avoided. Retention and compaction are explicit operational policies; no automatic VACUUM or evidence deletion is configured.
@@ -135,11 +135,47 @@ assessmentHash covers principal metrics, assessment, inventory, evidence IDs, so
 
 ## 6. Publication and restart
 
-One writer is assumed. Bronze MERGE is idempotent on source coordinates; scripts/crash-check.sh kills the pipeline right after the Bronze commit (FAIL_AFTER_BRONZE_BATCH) and checks that the restarted query replays that batch without duplicating or losing offsets. Gold MERGE is idempotent on product/snapshot. Silver overwrite is atomic per Delta table, not across all tables. The Gold manifest is written last. An in-flight Silver version must not be treated as an approved Gold snapshot.
+One writer is assumed. Each batch writes, in order:
 
-A reader first pins a committed snapshotId, then reads history at exactly that ID; it must never independently select the newest row for each product. A crash after Gold history but before the manifest leaves an unpublished snapshot. A retry inserts no duplicate assessment key and then publishes the manifest. Consumers ignore any unpublished rows.
+1. **Bronze.** An insert-only MERGE on source coordinates.
+2. **Silver.** Each table is overwritten whole: atomic per table, not across tables.
+3. **Gold.** `gold/exposure_intervals`, then `gold/assessment_policies`, then `gold/assessment_history`.
+4. **The manifest row,** in `gold/commits`, last of all.
 
-Do not delete checkpoints while retaining Gold under the same namespace: batch IDs restart and collide. A replay must have an isolated data/checkpoint namespace. Production requires run/lineage identity, source high-watermarks, exact Delta input versions and code/rule version in the manifest. Multiple concurrent writers are unsupported.
+A snapshot without a manifest row does not exist for readers.
+
+**Readers** (Snapshots.java):
+- `Snapshots.latest` pins the newest committed snapshot.
+- `Snapshots.assessments` and `Snapshots.intervals` read each Gold table filtered to that snapshotId, at the Delta version the manifest recorded. Rows written later can't appear in that read, even by mistake.
+- `Snapshots.committedHistory` lists every committed snapshot's assessments.
+- A reader must never select the newest row per product on its own.
+
+**Retries.** Batch IDs come from the Spark checkpoint and become snapshot IDs.
+- **Before Gold:** a batch that stopped before its manifest left rows that carry its snapshotId but no commit. The retry deletes those rows and writes the snapshot again. Only the retry's rows remain, even if the code or input changed between attempts.
+- **After the manifest:** a crash between the manifest and Spark recording the batch as done replays the batch. The replay finds the manifest and writes nothing to Gold, not even a rewrite that would briefly hide published rows.
+- **Checkpoint replaced:** batch IDs restart. If gold/commits holds a manifest from another checkpoint lineage, publication is refused, naming both lineages. A replay needs an isolated data/checkpoint namespace.
+- Multiple concurrent writers remain unsupported.
+
+**Manifest row** (one per snapshot):
+
+| Field | Meaning |
+|---|---|
+| snapshotId, committedAt, products | Batch ID, publication time, number of assessments |
+| lineageId | Streaming query ID, kept by the checkpoint across restarts (`unattached` when process runs outside a stream) |
+| runId | One per pipeline process start |
+| codeVersion | `CODE_VERSION` from the deployment (CI sets the commit SHA; `dev` otherwise) |
+| ruleVersion, policyVersion | Exposure calculation and outcome policy versions |
+| dataAsOf | Newest source eventTime in the canonical input |
+| sourceHighWatermarks | Per topic partition, the highest Kafka offset and broker time in the Bronze version read |
+| tableVersions | Delta version of every table read (bronze/events, silver/events_current) and written (each Silver table, the case log, each Gold table) |
+| evidenceRevisions, evidenceDigest | Count and SHA-256 of the distinct `kind:eventId:revision:payloadHash` source revisions across all assessments |
+| assessmentsDigest | SHA-256 of the sorted `productId:assessmentHash` pairs |
+
+The digests cover content only, not times or identities. So a retried snapshot can be compared with a clean run of the same input, and a reader can recompute evidenceDigest from the pinned assessments.
+
+**Fault injection:** `FAIL_AT=<stage>:<batch>`, where stage is bronze, silver, intervals or history. The pipeline stops right after that stage of that batch: in the pipeline the JVM halts, and in tests it throws.
+- **PublicationTest:** runs the real `Pipeline.process` against temporary lakes. It stops after the interval write and after the history write, plants a stale uncommitted row, then retries. It checks that readers saw snapshot 0 throughout, that the retried snapshot's digests equal a clean run's, that a replay after commit writes nothing, and that a new lineage is refused.
+- **scripts/crash-check.sh:** does the same in Compose, with a real halt after Bronze and after Gold history.
 
 ## 7. Scalability design
 
@@ -149,4 +185,4 @@ Persist versioned domain tables for placements, container ancestry, assignments,
 
 ## 8. Code responsibilities
 
-Timelines.java: assignment and custody revision history, timeline anomalies and mapping invalidations. Lineage.java: direct memberships, lineage anomalies and resolved unit-to-container intervals. Model.java: contract validation with per-rule reason codes, quarantine and conflict cases with resolution rules, semantic payload hashes, canonical revisions, interval joins and assessment SQL. Exposure.java: interval merging, differences and the exact source revisions behind each interval. Policy.java: outcome states, reasons, flags and their versioned definition. Pipeline.java: Kafka source, foreachBatch persistence and committed publication. Simulator.java: synthetic initial state, retries, malformed event and assignment correction. VerifyDemo.java: read committed assessments and check the expected correction. Inspect.java: print persisted-state counts used by scripts/restart-check.sh and scripts/crash-check.sh. BronzeTest.java: provenance fields, source-system fallback, replay without duplicates, repeated payloads as evidence, and appending to a Bronze table from before the provenance columns. ModelTest.java: six real Spark tests for correction/deduplication, interval union, invalid/conflicting contracts, published examples, the reason code for each contract violation, and formatting-insensitive conflict detection. SilverTest.java: quarantine evidence and resolution by correction, conflict cases with all variants and resolution by a higher revision, and the case log recording each transition once. LineageTest.java: the exact units affected before and after a pallet split, merge and repack over time, and contradictions, level mismatches and cycles that are reported and kept out of lineage. TimelineTest.java: a correction that arrives before the revision it replaces invalidates the former and revised units, one sensor in two containers versus two sensors in one, and custody handover, gap and overlap. ExposureTest.java: half-open boundaries, duplicates and overlapping sensors counted once, gaps persisted as intervals, a split assignment, and evidence naming the exact revisions used; every case checks that each Gold duration is the sum of its persisted, disjoint intervals. PolicyTest.java: exact allowance, limit, uncertainty and inventory-age thresholds, partial coverage, mixed specification periods, each ambiguity flag beside the outcome, stale and unknown inventory, and outcomes that match the persisted policy.
+Timelines.java: assignment and custody revision history, timeline anomalies and mapping invalidations. Lineage.java: direct memberships, lineage anomalies and resolved unit-to-container intervals. Model.java: contract validation with per-rule reason codes, quarantine and conflict cases with resolution rules, semantic payload hashes, canonical revisions, interval joins and assessment SQL. Exposure.java: interval merging, differences and the exact source revisions behind each interval. Policy.java: outcome states, reasons, flags and their versioned definition. Snapshots.java: the pinned-snapshot reader, the manifest, the lineage guard and removal of uncommitted rows. Pipeline.java: Kafka source, foreachBatch persistence and committed publication. Simulator.java: synthetic initial state, retries, malformed event and assignment correction. VerifyDemo.java: read committed assessments and check the expected correction. Inspect.java: print persisted-state counts used by scripts/restart-check.sh and scripts/crash-check.sh. BronzeTest.java: provenance fields, source-system fallback, replay without duplicates, repeated payloads as evidence, and appending to a Bronze table from before the provenance columns. ModelTest.java: six real Spark tests for correction/deduplication, interval union, invalid/conflicting contracts, published examples, the reason code for each contract violation, and formatting-insensitive conflict detection. SilverTest.java: quarantine evidence and resolution by correction, conflict cases with all variants and resolution by a higher revision, and the case log recording each transition once. LineageTest.java: the exact units affected before and after a pallet split, merge and repack over time, and contradictions, level mismatches and cycles that are reported and kept out of lineage. TimelineTest.java: a correction that arrives before the revision it replaces invalidates the former and revised units, one sensor in two containers versus two sensors in one, and custody handover, gap and overlap. ExposureTest.java: half-open boundaries, duplicates and overlapping sensors counted once, gaps persisted as intervals, a split assignment, and evidence naming the exact revisions used; every case checks that each Gold duration is the sum of its persisted, disjoint intervals. PolicyTest.java: exact allowance, limit, uncertainty and inventory-age thresholds, partial coverage, mixed specification periods, each ambiguity flag beside the outcome, stale and unknown inventory, and outcomes that match the persisted policy. PublicationTest.java: failures injected between the Gold writes stay invisible, retries reproduce a clean run's digests, a replay after the manifest writes nothing, a new checkpoint lineage is refused, and the manifest records identity, high-watermarks, table versions and a reproducible evidence digest.

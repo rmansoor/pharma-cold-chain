@@ -17,7 +17,10 @@ public final class Inspect {
    +" history="+(gold?s.read().format("delta").load(base+"/gold/assessment_history").count():0)
    +" commits="+(gold?c.getLong(1):0)+" lastSnapshot="+(gold?c.getLong(0):-1)
    +" quarantine="+(gold?s.read().format("delta").load(base+"/silver/quarantine").count():0)
-   +" caseLog="+(DeltaTable.isDeltaTable(s,base+"/silver/case_log")?s.read().format("delta").load(base+"/silver/case_log").count():0));
+   +" caseLog="+(DeltaTable.isDeltaTable(s,base+"/silver/case_log")?s.read().format("delta").load(base+"/silver/case_log").count():0)
+   // visible: rows a reader of the pinned snapshot sees; uncommitted: history rows of snapshots without a manifest.
+   +" visible="+(gold?Snapshots.assessments(s,base,Snapshots.latest(s,base)).count():0)
+   +" uncommitted="+(DeltaTable.isDeltaTable(s,base+"/gold/assessment_history")?Snapshots.uncommitted(s,base,Snapshots.HISTORY).count():0));
   s.stop();
  }
 }

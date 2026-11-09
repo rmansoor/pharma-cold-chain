@@ -1,4 +1,6 @@
 package io.coldchain;
+import java.util.*;
+import java.util.function.BiConsumer;
 import io.delta.tables.DeltaTable;
 import org.apache.spark.sql.*;
 import org.apache.spark.api.java.function.VoidFunction2;
@@ -6,7 +8,7 @@ import org.apache.spark.sql.streaming.Trigger;
 import static org.apache.spark.sql.functions.*;
 
 public final class Pipeline {
- static final String DATA=System.getenv().getOrDefault("DATA_DIR","/data");
+ static String DATA=System.getenv().getOrDefault("DATA_DIR","/data");
  public static SparkSession session(String name) {
   SparkSession s=SparkSession.builder().appName(name).master("local[2]")
    .config("spark.sql.extensions","io.delta.sql.DeltaSparkSessionExtension")
@@ -49,56 +51,89 @@ public final class Pipeline {
   merge(states.sparkSession(),states.withColumn("snapshotId",lit(id)).withColumn("recordedAt",current_timestamp()),path,
    "t.caseId=s.caseId AND t.status=s.status");
  }
- static void snapshot(Dataset<Row> data,String path) {
+ static long version(SparkSession s,String path){return DeltaTable.forPath(s,path).history(1).first().<Long>getAs("version");}
+ // Rebuilt Silver tables are replaced whole; returns the Delta version written, for the manifest.
+ static long snapshot(Dataset<Row> data,String path) {
   data.write().format("delta").mode("overwrite").option("overwriteSchema",true).save(path);
+  return version(data.sparkSession(),path);
+ }
+ // Run identity: one per pipeline process. Lineage identity is the streaming query ID, which the checkpoint keeps across
+ // restarts; batch IDs, and so snapshot IDs, are unique only within one lineage.
+ static final String RUN_ID=UUID.randomUUID().toString();
+ static final String CODE_VERSION=System.getenv().getOrDefault("CODE_VERSION","dev");
+ // Fault injection (scripts/crash-check.sh, PublicationTest): FAIL_AT=<stage>:<batch> stops right after that stage of that
+ // batch. In the pipeline the JVM halts, as a crash would; tests set halt=false to get an exception instead.
+ static String failAt=System.getenv("FAIL_AT");
+ static boolean halt=true;
+ static void inject(String stage,long id) {
+  if(!(stage+":"+id).equals(failAt))return;
+  System.out.println("INJECTED FAILURE after "+stage+" batch="+id);System.out.flush();
+  if(halt)Runtime.getRuntime().halt(1);
+  throw new IllegalStateException("injected failure after "+stage+" batch="+id);
  }
  public static void process(Dataset<Row> batch,long id) {
+  String query=batch.sparkSession().sparkContext().getLocalProperty("sql.streaming.queryId");
+  process(batch,id,query==null?"unattached":query);
+ }
+ static void process(Dataset<Row> batch,long id,String lineage) {
   if(batch.isEmpty())return;
   SparkSession s=batch.sparkSession();
   ingest(batch,id,DATA+"/bronze/events");
-  // Fault injection for scripts/crash-check.sh: die after the Bronze commit, before Spark records the batch as done.
-  if(String.valueOf(id).equals(System.getenv("FAIL_AFTER_BRONZE_BATCH"))) {
-   System.out.println("INJECTED FAILURE after Bronze batch="+id);System.out.flush();Runtime.getRuntime().halt(1);
-  }
+  inject("bronze",id);
+  // Every table read or written is recorded at its Delta version; reads are pinned to the version recorded.
+  Map<String,Long> versions=new LinkedHashMap<>();
+  BiConsumer<Dataset<Row>,String> silver=(data,table)->versions.put(table,snapshot(data,DATA+"/"+table));
+  versions.put("bronze/events",version(s,DATA+"/bronze/events"));
+  Dataset<Row> source=s.read().format("delta").option("versionAsOf",versions.get("bronze/events")).load(DATA+"/bronze/events");
   // Rebuild from durable evidence, so late arrivals and higher revisions revise past exposure.
-  Dataset<Row> parsed=Model.parse(s.read().format("delta").load(DATA+"/bronze/events")).cache();
+  Dataset<Row> parsed=Model.parse(source).cache();
   Dataset<Row> good=parsed.filter("valid");
   Dataset<Row> quarantine=Model.quarantine(parsed),cases=Model.conflictCases(good);
-  snapshot(quarantine,DATA+"/silver/quarantine");
-  snapshot(cases,DATA+"/silver/conflict_cases");
+  silver.accept(quarantine,"silver/quarantine");
+  silver.accept(cases,"silver/conflict_cases");
   recordCases(Model.caseStates(quarantine,cases),id,DATA+"/silver/case_log");
-  Dataset<Row> canonical=Model.canonical(good);
-  snapshot(canonical,DATA+"/silver/events_current");
+  versions.put("silver/case_log",version(s,DATA+"/silver/case_log"));
+  silver.accept(Model.canonical(good),"silver/events_current");
   // Pin canonical input by reading the materialized version for all Gold calculations.
-  Dataset<Row> current=s.read().format("delta").load(DATA+"/silver/events_current");
+  Dataset<Row> current=s.read().format("delta").option("versionAsOf",versions.get("silver/events_current")).load(DATA+"/silver/events_current");
   Dataset<Row> edges=Lineage.edges(current).cache(),anomalies=Lineage.anomalies(edges).cache();
-  snapshot(Lineage.memberships(edges,anomalies),DATA+"/silver/memberships");
-  snapshot(anomalies,DATA+"/silver/lineage_anomalies");
+  silver.accept(Lineage.memberships(edges,anomalies),"silver/memberships");
+  silver.accept(anomalies,"silver/lineage_anomalies");
   Dataset<Row> units=Lineage.unitContainers(edges,anomalies).cache();
-  snapshot(units,DATA+"/silver/unit_containers");
+  silver.accept(units,"silver/unit_containers");
   Dataset<Row> timeline=Timelines.anomalies(current).cache(),history=Timelines.history(good,timeline).cache();
-  snapshot(timeline,DATA+"/silver/timeline_anomalies");
-  snapshot(history,DATA+"/silver/timelines");
-  snapshot(Timelines.invalidations(history,units),DATA+"/silver/mapping_invalidations");
-  snapshot(Specifications.effective(current),DATA+"/silver/specifications");
-  snapshot(Specifications.overlaps(current),DATA+"/silver/specification_overlaps");
-  snapshot(Measurements.readings(current),DATA+"/silver/readings");
-  snapshot(Measurements.samplingGaps(current),DATA+"/silver/sampling_gaps");
+  silver.accept(timeline,"silver/timeline_anomalies");
+  silver.accept(history,"silver/timelines");
+  silver.accept(Timelines.invalidations(history,units),"silver/mapping_invalidations");
+  silver.accept(Specifications.effective(current),"silver/specifications");
+  silver.accept(Specifications.overlaps(current),"silver/specification_overlaps");
+  silver.accept(Measurements.readings(current),"silver/readings");
+  silver.accept(Measurements.samplingGaps(current),"silver/sampling_gaps");
   Model.Result exposure=Model.exposure(s,current);
-  snapshot(exposure.segments(),DATA+"/silver/exposure_segments");
-  // Interval evidence is kept per snapshot, like the assessments it explains, so a superseded assessment stays traceable.
-  merge(s,exposure.intervals().withColumn("snapshotId",lit(id)),DATA+"/gold/exposure_intervals",
-   "t.productId=s.productId AND t.snapshotId=s.snapshotId AND t.metric=s.metric AND t.startTime=s.startTime");
-  // The policy each assessment names by policyVersion; one row per version, never rewritten.
-  merge(s,Policy.table(s,Model.RULE_VERSION),DATA+"/gold/assessment_policies","t.policyVersion=s.policyVersion");
+  silver.accept(exposure.segments(),"silver/exposure_segments");
+  inject("silver",id);
   Dataset<Row> assessed=exposure.assessments().withColumn("snapshotId",lit(id)).cache();
-  merge(s,assessed,DATA+"/gold/assessment_history","t.productId=s.productId AND t.snapshotId=s.snapshotId");
-  // Manifest is written last. Readers must use history filtered by a committed snapshotId.
-  Dataset<Row> manifest=s.range(1).select(lit(id).alias("snapshotId"),current_timestamp().alias("committedAt"),
-   lit(assessed.count()).alias("products"));
-  merge(s,manifest,DATA+"/gold/commits","t.snapshotId=s.snapshotId");
-  System.out.println("COMMITTED snapshot="+id+" products="+assessed.count());
-  assessed.unpersist();edges.unpersist();anomalies.unpersist();units.unpersist();timeline.unpersist();history.unpersist();parsed.unpersist();
+  try {
+   // A batch replayed after its manifest (a crash before Spark recorded it as done) publishes nothing again.
+   if(Snapshots.committed(s,DATA,id,lineage)){System.out.println("ALREADY COMMITTED snapshot="+id+"; replay publishes nothing");return;}
+   Snapshots.discardUncommitted(s,DATA,id);
+   // Interval evidence is kept per snapshot, like the assessments it explains, so a superseded assessment stays traceable.
+   merge(s,exposure.intervals().withColumn("snapshotId",lit(id)),DATA+"/gold/exposure_intervals",
+    "t.productId=s.productId AND t.snapshotId=s.snapshotId AND t.metric=s.metric AND t.startTime=s.startTime");
+   versions.put("gold/exposure_intervals",version(s,DATA+"/gold/exposure_intervals"));
+   inject("intervals",id);
+   // The policy each assessment names by policyVersion; one row per version, never rewritten.
+   merge(s,Policy.table(s,Model.RULE_VERSION),DATA+"/gold/assessment_policies","t.policyVersion=s.policyVersion");
+   versions.put("gold/assessment_policies",version(s,DATA+"/gold/assessment_policies"));
+   merge(s,assessed,DATA+"/gold/assessment_history","t.productId=s.productId AND t.snapshotId=s.snapshotId");
+   versions.put("gold/assessment_history",version(s,DATA+"/gold/assessment_history"));
+   inject("history",id);
+   // The manifest is written last: until it exists, nothing above is visible to readers (Snapshots).
+   merge(s,Snapshots.manifest(s,id,lineage,RUN_ID,CODE_VERSION,assessed,source,current,versions),DATA+"/gold/commits","t.snapshotId=s.snapshotId");
+   System.out.println("COMMITTED snapshot="+id+" products="+assessed.count());
+  } finally {
+   assessed.unpersist();edges.unpersist();anomalies.unpersist();units.unpersist();timeline.unpersist();history.unpersist();parsed.unpersist();
+  }
  }
  public static void main(String[] args)throws Exception {
   SparkSession s=session("Cold-chain medallion pipeline");

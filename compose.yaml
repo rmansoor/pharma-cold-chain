@@ -37,7 +37,7 @@ services:
     depends_on:
       topics: {condition: service_completed_successfully}
     ports: ["4041:4040"]
-    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', DATA_DIR: /data, FAIL_AFTER_BRONZE_BATCH: '${FAIL_AFTER_BRONZE_BATCH:-}', ALLOW_SYNTHETIC_SPECS: '${ALLOW_SYNTHETIC_SPECS:-false}'}
+    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', DATA_DIR: /data, FAIL_AT: '${FAIL_AT:-}', CODE_VERSION: '${CODE_VERSION:-dev}', ALLOW_SYNTHETIC_SPECS: '${ALLOW_SYNTHETIC_SPECS:-false}'}
     volumes: ["pipeline-data:/data"]
   simulator:
     build: .

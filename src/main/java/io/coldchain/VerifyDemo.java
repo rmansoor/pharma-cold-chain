@@ -8,9 +8,12 @@ public final class VerifyDemo {
   String base=Pipeline.DATA;
   while(System.nanoTime()<end) {
    if(DeltaTable.isDeltaTable(s,base+"/gold/commits")) {
-    long latest=s.read().format("delta").load(base+"/gold/commits").agg(max("snapshotId")).first().getLong(0);
-    Dataset<Row> all=s.read().format("delta").load(base+"/gold/assessment_history");
-    Dataset<Row> now=all.filter(col("snapshotId").equalTo(latest));
+    // Pin one committed snapshot and read everything at it; uncommitted rows are never read.
+    Row commit=Snapshots.latest(s,base);
+    if(commit==null){Thread.sleep(3000);continue;}
+    long latest=commit.getAs("snapshotId");
+    Dataset<Row> all=Snapshots.committedHistory(s,base);
+    Dataset<Row> now=Snapshots.assessments(s,base,commit);
     boolean before=all.filter("productId='UNIT-A' AND assessment='QUALITY_REVIEW'").count()>0;
     boolean b=now.filter("productId='UNIT-B' AND assessment='QUALITY_REVIEW' AND excursionSeconds=600 AND coveredSeconds=600").count()==1;
     boolean a=now.filter("productId='UNIT-A' AND assessment='INSUFFICIENT_DATA' AND coveredSeconds=0").count()==1;
@@ -41,7 +44,7 @@ public final class VerifyDemo {
     // snapshot's UNIT-A excursion, on revision 1, is still retrievable.
     boolean traced=DeltaTable.isDeltaTable(s,base+"/gold/exposure_intervals");
     if(traced) {
-     Dataset<Row> intervals=s.read().format("delta").load(base+"/gold/exposure_intervals");
+     Dataset<Row> intervals=s.read().format("delta").load(base+"/gold/exposure_intervals").join(s.read().format("delta").load(base+"/gold/commits").select("snapshotId"),"snapshotId","left_semi");
      String assign="exists(sources,x -> x.kind='ASSIGNMENT' AND x.eventId='assign' AND x.revision=%d)";
      traced=intervals.filter(col("snapshotId").equalTo(latest)).filter("productId='UNIT-B' AND metric='EXCURSION' AND seconds=600 AND "+assign.formatted(2)).count()==1
       && intervals.filter(col("snapshotId").equalTo(latest)).filter("productId='UNIT-A' AND metric='MISSING' AND seconds=600").count()==1
@@ -53,9 +56,19 @@ public final class VerifyDemo {
      && now.filter("policyVersion='"+Policy.VERSION+"'").count()==now.count()
      && now.filter("productId='UNIT-B' AND assessment='QUALITY_REVIEW' AND dataQualityFlags=array('MISSING_CUSTODY')").count()==1
      && now.filter("productId='UNIT-D' AND dataQualityFlags=array('MISSING_COVERAGE','UNKNOWN_INVENTORY')").count()==1;
-    if(before&&a&&b&&nested&&dlq&&resolved&&invalidated&&custody&&quality&&traced&&policy) {
+    // The manifest names the streaming lineage, this run, source high-watermarks and the table versions it read and wrote,
+    // and its evidence digest matches the pinned assessments.
+    String digest=now.selectExpr("explode(sourceRevisions) x").selectExpr("concat_ws(':',x.kind,x.eventId,x.revision,x.payloadHash) r")
+     .agg(sha2(array_join(array_sort(collect_set("r")),"\n"),256)).first().getString(0);
+    boolean published=!"unattached".equals(commit.getAs("lineageId")) && commit.getAs("runId")!=null
+     && commit.<Long>getAs("products")==now.count() && digest.equals(commit.getAs("evidenceDigest"))
+     && commit.getList(commit.fieldIndex("sourceHighWatermarks")).size()>0
+     && Snapshots.recorded(commit,"bronze/events")!=null && Snapshots.recorded(commit,"gold/assessment_history")!=null;
+    if(before&&a&&b&&nested&&dlq&&resolved&&invalidated&&custody&&quality&&traced&&policy&&published) {
      now.orderBy("productId").show(false);
-     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; synthetic thresholds flagged and calibrated reading used; exposure intervals traced to exact revisions; outcomes name a policy that releases nothing, with data-quality flags beside them; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision.");s.stop();return;
+     System.out.println("Pinned snapshot "+latest+": lineage "+commit.getAs("lineageId")+", run "+commit.getAs("runId")+", code "+commit.getAs("codeVersion")
+      +", evidence "+commit.getAs("evidenceRevisions")+" revisions, tables "+commit.getList(commit.fieldIndex("tableVersions")));
+     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; synthetic thresholds flagged and calibrated reading used; exposure intervals traced to exact revisions; outcomes name a policy that releases nothing, with data-quality flags beside them; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision; manifest identifies lineage, run, high-watermarks, table versions and evidence.");s.stop();return;
     }
    }
    Thread.sleep(3000);

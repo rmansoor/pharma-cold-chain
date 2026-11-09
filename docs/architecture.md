@@ -42,7 +42,7 @@ flowchart TD
   U --> IV[(Gold: exposure intervals with exact source revisions, by snapshot)]
   U --> INV[Join latest known inventory]
   INV --> H[(Gold: assessment history by product and snapshot)]
-  H --> M[(Gold: committed snapshot manifest)]
+  H --> M[(Gold: manifest with lineage, run, versions, high-watermarks and digests)]
   M --> R[Reader pins one committed snapshot]
   H --> R
   IV --> R
@@ -97,7 +97,7 @@ Proposed: managed Spark executors, shared object storage, replicated Kafka, vers
 9. Intersect the resolved product placement, sensor/container assignment, measured interval and product specification validity.
 10. Union overlapping intervals independently for each metric (expected presence, coverage, excursion, calibration, specification, custody); cut missing, uncalibrated, unspecified and missing-custody time as interval differences. Persist every interval with the exact revisions of its source events, and sum seconds only from those intervals.
 11. Apply the illustrative excursion rule; carry missing coverage and latest inventory context.
-12. Insert product assessments keyed by snapshotId; write the manifest only after all assessments succeed.
+12. Insert interval evidence and product assessments keyed by snapshotId, after deleting any rows an unpublished attempt left; write the manifest only after all of them succeed. A batch already published writes nothing.
 13. Consumers select max committed snapshotId and read only matching assessment-history records.
 14. On late evidence or correction, reconstruct the affected history. The prototype recomputes all retained data; the target design limits recomputation to impacted products and intervals.
 
