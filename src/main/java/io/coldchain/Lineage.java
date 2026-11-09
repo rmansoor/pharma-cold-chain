@@ -32,7 +32,9 @@ public final class Lineage {
   }
   return all;
  }
- public static Dataset<Row> anomalies(Dataset<Row> edges) {
+ public static Dataset<Row> anomalies(Dataset<Row> edges){return anomalies(edges,paths(edges));}
+ // paths must be paths(edges); callers that also need the chains pass them in to avoid a second search.
+ static Dataset<Row> anomalies(Dataset<Row> edges,Dataset<Row> paths) {
   // A child cannot be in two different parents at the same instant.
   Dataset<Row> parents=edges.as("a").join(edges.as("b"),expr("a.childId = b.childId AND a.parentId <> b.parentId AND a.eventId < b.eventId AND "+OVERLAP))
    .selectExpr("'CONTRADICTORY_PARENT' anomaly","a.childId subjectId","array(a.eventId,b.eventId) eventIds",
@@ -42,7 +44,7 @@ public final class Lineage {
    .groupBy("id").agg(countDistinct("level").alias("n"),sort_array(collect_set("eventId")).alias("eventIds")).filter("n > 1")
    .selectExpr("'LEVEL_MISMATCH' anomaly","id subjectId","eventIds","CAST(NULL AS timestamp) startTime","CAST(NULL AS timestamp) endTime");
   // An ID that is its own ancestor at some instant. Each member of the loop finds it, so keep one record per set of events.
-  Dataset<Row> cycles=paths(edges).filter("cycle AND origin = node").withColumn("eventIds",array_sort(array_distinct(col("lineageIds"))))
+  Dataset<Row> cycles=paths.filter("cycle AND origin = node").withColumn("eventIds",array_sort(array_distinct(col("lineageIds"))))
    .groupBy("eventIds").agg(min("origin").alias("subjectId"),min("startTime").alias("startTime"),max("endTime").alias("endTime"))
    .selectExpr("'CYCLE' anomaly","subjectId","eventIds","startTime","endTime");
   return parents.unionByName(levels).unionByName(cycles);

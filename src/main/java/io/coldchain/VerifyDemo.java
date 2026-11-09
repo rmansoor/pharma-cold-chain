@@ -47,9 +47,15 @@ public final class VerifyDemo {
       && intervals.filter(col("snapshotId").equalTo(latest)).filter("productId='UNIT-A' AND metric='MISSING' AND seconds=600").count()==1
       && intervals.filter("productId='UNIT-A' AND metric='EXCURSION' AND "+assign.formatted(1)).count()>0;
     }
-    if(before&&a&&b&&nested&&dlq&&resolved&&invalidated&&custody&&quality&&traced) {
+    // Outcomes name a persisted policy that releases nothing, and flags are reported beside them whatever the outcome.
+    boolean policy=DeltaTable.isDeltaTable(s,base+"/gold/assessment_policies") && s.read().format("delta").load(base+"/gold/assessment_policies")
+     .filter("policyVersion='"+Policy.VERSION+"' AND size(states)=3 AND forall(states,x -> NOT x.impliesRelease)").count()==1
+     && now.filter("policyVersion='"+Policy.VERSION+"'").count()==now.count()
+     && now.filter("productId='UNIT-B' AND assessment='QUALITY_REVIEW' AND dataQualityFlags=array('MISSING_CUSTODY')").count()==1
+     && now.filter("productId='UNIT-D' AND dataQualityFlags=array('MISSING_COVERAGE','UNKNOWN_INVENTORY')").count()==1;
+    if(before&&a&&b&&nested&&dlq&&resolved&&invalidated&&custody&&quality&&traced&&policy) {
      now.orderBy("productId").show(false);
-     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; synthetic thresholds flagged and calibrated reading used; exposure intervals traced to exact revisions; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision.");s.stop();return;
+     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; synthetic thresholds flagged and calibrated reading used; exposure intervals traced to exact revisions; outcomes name a policy that releases nothing, with data-quality flags beside them; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision.");s.stop();return;
     }
    }
    Thread.sleep(3000);

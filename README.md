@@ -26,4 +26,4 @@ Needs about 4 GB of Docker memory. Versions, measured resources and the restart 
 
 Host Kafka: localhost:29092. Spark UI: localhost:4041. New project volumes are separate from the earlier fraud project. The prototype reconstructs all retained Bronze evidence per nonempty batch; incremental processing is planned. Synthetic thresholds are not product-handling guidance. No clinical decisions, automatic recalls or compliance certification are implemented.
 
-28 local Spark transformation and contract tests pass (`mvn -s maven-settings.xml -B test`). CI also runs the Compose demo, restart and crash checks. Jira: epic SID-12, stories SID-13..SID-28 (see docs/jira-backlog.json).
+34 local Spark transformation and contract tests pass (`mvn -s maven-settings.xml -B test`). CI also runs the Compose demo, restart and crash checks. Jira: epic SID-12, stories SID-13..SID-28 (see docs/jira-backlog.json).
