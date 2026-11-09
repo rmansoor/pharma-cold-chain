@@ -114,23 +114,11 @@ public final class Model {
     .orderBy(col("revision").desc(),col("kafkaTime").desc(),col("partition").desc(),col("offset").desc())))
    .filter("rn=1").drop("rn","valid","reasons");
  }
- // Total seconds in the union of each key's intervals: overlapping and touching intervals are merged before summing, so
- // duplicate or overlapping evidence never inflates a duration.
- static String unionSeconds(String view,String keys) {
-  return """
-   WITH previous AS (
-    SELECT *, max(endTime) OVER (PARTITION BY %1$s ORDER BY startTime,endTime
-     ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) previousEnd FROM %2$s
-   ), numbered AS (
-    SELECT *, sum(IF(previousEnd IS NULL OR startTime > previousEnd,1,0)) OVER (PARTITION BY %1$s ORDER BY startTime,endTime
-     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) island FROM previous
-   ), merged AS (
-    SELECT %1$s,island,min(startTime) a,max(endTime) b FROM numbered GROUP BY %1$s,island
-   )
-   SELECT %1$s,sum(unix_timestamp(b)-unix_timestamp(a)) seconds FROM merged GROUP BY %1$s
-   """.formatted(keys,view);
- }
- public static Dataset<Row> assessments(SparkSession spark, Dataset<Row> events) {
+ // Gold assessments with their evidence: every merged interval behind each duration (gold/exposure_intervals) and every
+ // elementary measured segment (silver/exposure_segments), both with exact source revisions.
+ public record Result(Dataset<Row> assessments,Dataset<Row> intervals,Dataset<Row> segments) {}
+ public static Dataset<Row> assessments(SparkSession spark, Dataset<Row> events){return exposure(spark,events).assessments();}
+ public static Result exposure(SparkSession spark, Dataset<Row> events) {
   // Materialize once: lineage, timelines and the segment joins below each read events several times, and without this
   // Spark re-plans the whole parse for every reference.
   events=events.localCheckpoint();
@@ -146,13 +134,16 @@ public final class Model {
   // One specification per product code and instant, after precedence (Specifications.effective).
   Specifications.effective(events).localCheckpoint().createOrReplaceTempView("specs");
   // Split intervals at every resolved container interval, sensor assignment, reading and specification boundary.
-  // Point readings (startTime = endTime) never form a segment; they are matched at their instant below.
+  // Point readings (startTime = endTime) never form a segment; they are matched at their instant below. sourceIds names
+  // every event a row depends on: the membership chain, the assignment, the reading and the specification.
   spark.sql("""
    SELECT p.productId, p.lineageIds, r.eventId readingId, r.sensorId,
     a.eventId assignmentId, s.specificationId,
     greatest(p.startTime,a.startTime,r.startTime,s.startTime) startTime,
     least(p.endTime,a.endTime,r.endTime,s.endTime) endTime,
-    r.temperatureC, s.minC, s.maxC, s.maxExcursionSeconds, s.synthetic
+    r.temperatureC, s.minC, s.maxC, s.maxExcursionSeconds, s.synthetic,
+    r.temperatureC < s.minC OR r.temperatureC > s.maxC outOfRange,
+    concat(p.lineageIds,array(a.eventId,r.eventId,s.specificationId)) sourceIds
    FROM placements p
    JOIN assignments a ON a.containerId=p.containerId
    JOIN events r ON r.kind='READING' AND r.sensorId=a.sensorId AND r.startTime < r.endTime
@@ -163,13 +154,14 @@ public final class Model {
   // The part of each segment measured by a sensor with a valid calibration, with that calibration's uncertainty.
   spark.sql("""
    SELECT g.productId, g.temperatureC, g.minC, g.maxC, c.eventId calibrationId, c.uncertaintyC,
-    greatest(g.startTime,c.startTime) startTime, least(g.endTime,c.endTime) endTime
+    greatest(g.startTime,c.startTime) startTime, least(g.endTime,c.endTime) endTime, concat(g.sourceIds,array(c.eventId)) sourceIds
    FROM segments g JOIN events c ON c.kind='CALIBRATION' AND c.sensorId=g.sensorId
    WHERE greatest(g.startTime,c.startTime) < least(g.endTime,c.endTime)
    """).createOrReplaceTempView("calibrated");
   spark.sql("""
-   SELECT p.productId, p.lineageIds, r.eventId readingId, a.eventId assignmentId, s.specificationId,
-    s.maxExcursionSeconds, s.synthetic, r.temperatureC < s.minC OR r.temperatureC > s.maxC outOfRange
+   SELECT p.productId, p.lineageIds, r.eventId readingId, a.eventId assignmentId, s.specificationId, r.startTime time,
+    s.maxExcursionSeconds, s.synthetic, r.temperatureC < s.minC OR r.temperatureC > s.maxC outOfRange,
+    concat(p.lineageIds,array(a.eventId,r.eventId,s.specificationId)) sourceIds
    FROM placements p
    JOIN assignments a ON a.containerId=p.containerId
    JOIN events r ON r.kind='READING' AND r.sensorId=a.sensorId AND r.startTime = r.endTime
@@ -177,44 +169,59 @@ public final class Model {
    WHERE greatest(p.startTime,a.startTime,s.startTime) <= r.startTime AND r.startTime < least(p.endTime,a.endTime,s.endTime)
    """).createOrReplaceTempView("points");
   spark.sql("""
-   SELECT p.productId, c.custodianId, greatest(p.startTime,c.startTime) startTime, least(p.endTime,c.endTime) endTime
+   SELECT p.productId, c.custodianId, greatest(p.startTime,c.startTime) startTime, least(p.endTime,c.endTime) endTime,
+    concat(p.lineageIds,array(c.eventId)) sourceIds
    FROM placements p JOIN custody c ON c.containerId=p.containerId
    WHERE greatest(p.startTime,c.startTime) < least(p.endTime,c.endTime)
    """).createOrReplaceTempView("custodySegments");
-  // POSSIBLE is time out of range or, for a calibrated measurement, within its uncertainty of a limit.
+  // Raw interval sets, named after the Gold durations they produce. POSSIBLE_EXCURSION is time out of range or, for a
+  // calibrated measurement, within its uncertainty of a limit.
   spark.sql("""
-   SELECT productId, 'COVERAGE' metric, startTime, endTime FROM segments
+   SELECT productId, 'COVERED' metric, startTime, endTime, sourceIds FROM segments
    UNION ALL
-   SELECT productId, 'UNSAFE', startTime, endTime FROM segments
-   WHERE temperatureC < minC OR temperatureC > maxC
+   SELECT productId, 'EXCURSION', startTime, endTime, sourceIds FROM segments WHERE outOfRange
    UNION ALL
-   SELECT productId, 'CALIBRATED', startTime, endTime FROM calibrated
+   SELECT productId, 'CALIBRATED', startTime, endTime, sourceIds FROM calibrated
    UNION ALL
-   SELECT productId, 'POSSIBLE', startTime, endTime FROM segments
-   WHERE temperatureC < minC OR temperatureC > maxC
+   SELECT productId, 'POSSIBLE_EXCURSION', startTime, endTime, sourceIds FROM segments WHERE outOfRange
    UNION ALL
-   SELECT productId, 'POSSIBLE', startTime, endTime FROM calibrated
+   SELECT productId, 'POSSIBLE_EXCURSION', startTime, endTime, sourceIds FROM calibrated
    WHERE temperatureC < minC + uncertaintyC OR temperatureC > maxC - uncertaintyC
    UNION ALL
-   SELECT childId, 'EXPECTED', startTime, endTime FROM units
+   SELECT childId, 'EXPECTED', startTime, endTime, array(eventId) FROM units
    UNION ALL
-   SELECT productId, 'LOCATED', startTime, endTime FROM placements
+   SELECT productId, 'LOCATED', startTime, endTime, lineageIds FROM placements
    UNION ALL
-   SELECT p.productId, 'SPECIFIED', greatest(p.startTime,s.startTime), least(p.endTime,s.endTime)
+   SELECT p.productId, 'SPECIFIED', greatest(p.startTime,s.startTime), least(p.endTime,s.endTime), concat(p.lineageIds,array(s.specificationId))
    FROM placements p JOIN specs s ON s.productCode=p.productCode
    WHERE greatest(p.startTime,s.startTime) < least(p.endTime,s.endTime)
    UNION ALL
-   SELECT productId, 'CUSTODY', startTime, endTime FROM custodySegments
-   """).createOrReplaceTempView("intervals");
-  spark.sql(unionSeconds("intervals","productId,metric")).createOrReplaceTempView("durations");
+   SELECT productId, 'CUSTODY', startTime, endTime, sourceIds FROM custodySegments
+   """).localCheckpoint().createOrReplaceTempView("intervals");
+  // Union before summing; differences (MISSING, UNCALIBRATED, UNSPECIFIED, MISSING_CUSTODY) are cut from the merged sets.
+  spark.sql(Exposure.islands("intervals","productId,metric")).localCheckpoint().createOrReplaceTempView("merged");
+  spark.sql(Exposure.gaps("merged")).createOrReplaceTempView("gapWindows");
+  spark.sql("SELECT * FROM merged UNION ALL SELECT * FROM ("+Exposure.islands("gapWindows","productId,metric")+")").createOrReplaceTempView("shapes");
+  spark.sql(Exposure.explained("shapes","intervals")+"""
+   UNION ALL
+   SELECT productId, 'OUT_OF_RANGE_POINT', time, time, sort_array(array_distinct(flatten(collect_list(sourceIds))))
+   FROM points WHERE outOfRange GROUP BY productId, time
+   """).createOrReplaceTempView("explained");
+  spark.sql(Exposure.revisions("explained","productId,metric,startTime,endTime","events")).createOrReplaceTempView("intervalSources");
+  Dataset<Row> intervals=spark.sql("""
+   SELECT productId, metric, startTime, endTime, unix_timestamp(endTime)-unix_timestamp(startTime) seconds, sources
+   FROM intervalSources
+   """).localCheckpoint();
+  intervals.createOrReplaceTempView("exposureIntervals");
   spark.sql("""
    SELECT productId, sum(IF(metric='EXPECTED',seconds,0)) expectedSeconds,
-    sum(IF(metric='COVERAGE',seconds,0)) coveredSeconds,
-    sum(IF(metric='UNSAFE',seconds,0)) excursionSeconds,
-    sum(IF(metric='POSSIBLE',seconds,0)) possibleExcursionSeconds,
-    sum(IF(metric='COVERAGE',seconds,0))-sum(IF(metric='CALIBRATED',seconds,0)) uncalibratedSeconds,
-    sum(IF(metric='LOCATED',seconds,0))-sum(IF(metric='SPECIFIED',seconds,0)) unspecifiedSeconds,
-    sum(IF(metric='LOCATED',seconds,0))-sum(IF(metric='CUSTODY',seconds,0)) missingCustodySeconds FROM durations GROUP BY productId
+    sum(IF(metric='COVERED',seconds,0)) coveredSeconds,
+    sum(IF(metric='EXCURSION',seconds,0)) excursionSeconds,
+    sum(IF(metric='POSSIBLE_EXCURSION',seconds,0)) possibleExcursionSeconds,
+    sum(IF(metric='UNCALIBRATED',seconds,0)) uncalibratedSeconds,
+    sum(IF(metric='UNSPECIFIED',seconds,0)) unspecifiedSeconds,
+    sum(IF(metric='MISSING_CUSTODY',seconds,0)) missingCustodySeconds,
+    sum(IF(metric='MISSING',seconds,0)) missingSeconds FROM exposureIntervals GROUP BY productId
    """).createOrReplaceTempView("metrics");
   spark.sql("""
    SELECT productId, sort_array(collect_set(readingId)) readingIds,
@@ -229,6 +236,9 @@ public final class Model {
     SELECT productId, readingId, assignmentId, specificationId, lineageIds, maxExcursionSeconds, synthetic, outOfRange FROM points
    ) GROUP BY productId
    """).createOrReplaceTempView("evidence");
+  // Every source revision the assessment depends on, whether or not it changed a number (an in-range point reading too).
+  spark.sql(Exposure.revisions("(SELECT productId, sourceIds FROM intervals UNION ALL SELECT productId, sourceIds FROM points)","productId","events"))
+   .createOrReplaceTempView("revisions");
   spark.sql("""
    SELECT productId, sort_array(collect_set(calibrationId)) calibrationIds, max(uncertaintyC) maxUncertaintyC
    FROM calibrated GROUP BY productId
@@ -247,11 +257,11 @@ public final class Model {
     coalesce(e.outOfRangePoints,0L) outOfRangePoints, coalesce(e.syntheticThresholds,false) syntheticThresholds,
     e.readingIds,e.assignmentIds,e.specificationIds,e.lineageIds,q.calibrationIds,q.maxUncertaintyC,c.custodianIds,
     coalesce(i.location,'UNKNOWN') location,coalesce(i.status,'UNKNOWN') inventoryStatus,
-    m.expectedSeconds-m.coveredSeconds missingSeconds
+    transform(v.sources,x -> named_struct('kind',x.kind,'eventId',x.eventId,'revision',x.revision,'payloadHash',x.payloadHash)) sourceRevisions
    FROM metrics m LEFT JOIN evidence e USING(productId) LEFT JOIN inventory i USING(productId) LEFT JOIN custodians c USING(productId)
-    LEFT JOIN calibrations q USING(productId)
+    LEFT JOIN calibrations q USING(productId) LEFT JOIN revisions v USING(productId)
    """).createOrReplaceTempView("assessed");
-  return spark.sql("""
+  Dataset<Row> gold=spark.sql("""
    SELECT *, CASE WHEN array_contains(assessmentReasons,'EXCURSION_ABOVE_ALLOWANCE') OR array_contains(assessmentReasons,'OUT_OF_RANGE_POINT')
      THEN 'QUALITY_REVIEW' WHEN size(assessmentReasons) > 0 OR allowed IS NULL THEN 'INSUFFICIENT_DATA'
      ELSE 'NO_OBSERVED_EXCURSION' END assessment,
@@ -259,7 +269,7 @@ public final class Model {
    FROM (SELECT *, filter(array(
      IF(excursionSeconds > allowed,'EXCURSION_ABOVE_ALLOWANCE',NULL),
      IF(outOfRangePoints > 0,'OUT_OF_RANGE_POINT',NULL),
-     IF(coveredSeconds < expectedSeconds,'MISSING_COVERAGE',NULL),
+     IF(missingSeconds > 0,'MISSING_COVERAGE',NULL),
      IF(unspecifiedSeconds > 0,'MISSING_SPECIFICATION',NULL),
      IF(uncalibratedSeconds > 0,'UNCALIBRATED_MEASUREMENT',NULL),
      IF(possibleExcursionSeconds > allowed AND NOT excursionSeconds > allowed,'WITHIN_MEASUREMENT_UNCERTAINTY',NULL)),
@@ -269,6 +279,10 @@ public final class Model {
     col("inventoryStatus"),col("readingIds"),col("assignmentIds"),col("specificationIds"),col("lineageIds"),
     col("missingCustodySeconds"),col("custodianIds"),col("possibleExcursionSeconds"),col("uncalibratedSeconds"),
     col("unspecifiedSeconds"),col("outOfRangePoints"),col("calibrationIds"),col("maxUncertaintyC"),col("syntheticThresholds"),
-    col("assessmentReasons"),col("ruleVersion"))),256));
+    col("assessmentReasons"),col("sourceRevisions"),col("ruleVersion"))),256));
+  Dataset<Row> segments=spark.sql(Exposure.revisions("segments",
+   "productId,startTime,endTime,lineageIds,assignmentId,sensorId,readingId,specificationId,temperatureC,minC,maxC,outOfRange","events"))
+   .withColumn("seconds",expr("unix_timestamp(endTime)-unix_timestamp(startTime)"));
+  return new Result(gold,intervals.withColumn("ruleVersion",lit("exposure-v4")),segments);
  }
 }

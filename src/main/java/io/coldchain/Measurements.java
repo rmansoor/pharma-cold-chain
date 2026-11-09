@@ -17,7 +17,7 @@ public final class Measurements {
     AND (greatest(r.startTime,c.startTime) < least(r.endTime,c.endTime)
      OR (r.startTime = r.endTime AND c.startTime <= r.startTime AND r.startTime < c.endTime))
    """).createOrReplaceTempView("quality_matches");
-  s.sql(Model.unionSeconds("quality_matches","eventId")).createOrReplaceTempView("quality_calibrated");
+  s.sql(Exposure.unionSeconds("quality_matches","eventId")).createOrReplaceTempView("quality_calibrated");
   return s.sql("""
    SELECT r.eventId, r.revision, r.sensorId, r.startTime, r.endTime, r.startTime = r.endTime point,
     r.temperatureC, r.temperature reportedTemperature, coalesce(r.temperatureUnit,'C') reportedUnit,

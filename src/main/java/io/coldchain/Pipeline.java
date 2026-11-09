@@ -81,7 +81,12 @@ public final class Pipeline {
   snapshot(Specifications.overlaps(current),DATA+"/silver/specification_overlaps");
   snapshot(Measurements.readings(current),DATA+"/silver/readings");
   snapshot(Measurements.samplingGaps(current),DATA+"/silver/sampling_gaps");
-  Dataset<Row> assessed=Model.assessments(s,current).withColumn("snapshotId",lit(id)).cache();
+  Model.Result exposure=Model.exposure(s,current);
+  snapshot(exposure.segments(),DATA+"/silver/exposure_segments");
+  // Interval evidence is kept per snapshot, like the assessments it explains, so a superseded assessment stays traceable.
+  merge(s,exposure.intervals().withColumn("snapshotId",lit(id)),DATA+"/gold/exposure_intervals",
+   "t.productId=s.productId AND t.snapshotId=s.snapshotId AND t.metric=s.metric AND t.startTime=s.startTime");
+  Dataset<Row> assessed=exposure.assessments().withColumn("snapshotId",lit(id)).cache();
   merge(s,assessed,DATA+"/gold/assessment_history","t.productId=s.productId AND t.snapshotId=s.snapshotId");
   // Manifest is written last. Readers must use history filtered by a committed snapshotId.
   Dataset<Row> manifest=s.range(1).select(lit(id).alias("snapshotId"),current_timestamp().alias("committedAt"),
