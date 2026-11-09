@@ -37,9 +37,19 @@ public final class VerifyDemo {
      && DeltaTable.isDeltaTable(s,base+"/silver/readings") && s.read().format("delta").load(base+"/silver/readings")
      .filter("eventId='reading-hot' AND calibration='CALIBRATED' AND uncertaintyC=0.5").count()==1
      && s.read().format("delta").load(base+"/silver/specifications").filter("specificationId='spec' AND synthetic").count()==1;
-    if(before&&a&&b&&nested&&dlq&&resolved&&invalidated&&custody&&quality) {
+    // Interval evidence names the exact revision: UNIT-B's excursion now rests on assignment revision 2, and the earlier
+    // snapshot's UNIT-A excursion, on revision 1, is still retrievable.
+    boolean traced=DeltaTable.isDeltaTable(s,base+"/gold/exposure_intervals");
+    if(traced) {
+     Dataset<Row> intervals=s.read().format("delta").load(base+"/gold/exposure_intervals");
+     String assign="exists(sources,x -> x.kind='ASSIGNMENT' AND x.eventId='assign' AND x.revision=%d)";
+     traced=intervals.filter(col("snapshotId").equalTo(latest)).filter("productId='UNIT-B' AND metric='EXCURSION' AND seconds=600 AND "+assign.formatted(2)).count()==1
+      && intervals.filter(col("snapshotId").equalTo(latest)).filter("productId='UNIT-A' AND metric='MISSING' AND seconds=600").count()==1
+      && intervals.filter("productId='UNIT-A' AND metric='EXCURSION' AND "+assign.formatted(1)).count()>0;
+    }
+    if(before&&a&&b&&nested&&dlq&&resolved&&invalidated&&custody&&quality&&traced) {
      now.orderBy("productId").show(false);
-     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; synthetic thresholds flagged and calibrated reading used; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision.");s.stop();return;
+     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; synthetic thresholds flagged and calibrated reading used; exposure intervals traced to exact revisions; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision.");s.stop();return;
     }
    }
    Thread.sleep(3000);

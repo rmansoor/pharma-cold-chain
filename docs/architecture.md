@@ -37,17 +37,20 @@ flowchart TD
   SP --> SQ[(Silver: specifications, specification overlaps, readings, sampling gaps)]
   SP --> J
   LIN --> J[Temporal intersection of resolved placement, assignment, reading and specification]
-  J --> U[Union intervals; compute coverage, excursion, uncertainty and calibration seconds]
+  J --> SEG[(Silver: exposure segments with source revisions)]
+  J --> U[Union intervals; cut missing, uncalibrated, unspecified and missing-custody intervals]
+  U --> IV[(Gold: exposure intervals with exact source revisions, by snapshot)]
   U --> INV[Join latest known inventory]
   INV --> H[(Gold: assessment history by product and snapshot)]
   H --> M[(Gold: committed snapshot manifest)]
   M --> R[Reader pins one committed snapshot]
   H --> R
+  IV --> R
   R --> VERIFY[Java scenario verifier]
   ING -. offsets and progress .-> CK[(Spark checkpoint)]
 ```
 
-One Spark local[2] application executes one micro-batch callback at a time. Kafka has four topics with four partitions, seven-day retention and replication factor one. Bronze is merged by topic/partition/offset. Silver tables are rebuilt from Bronze. The interval datasets are temporary Spark SQL views, not separate persisted tables. Gold history is insert-only by product/snapshot; a commit manifest is appended last. Readers must pin a committed snapshot before reading history.
+One Spark local[2] application executes one micro-batch callback at a time. Kafka has four topics with four partitions, seven-day retention and replication factor one. Bronze is merged by topic/partition/offset. Silver tables are rebuilt from Bronze. The elementary measured segments are persisted in silver/exposure_segments and the merged intervals behind every Gold duration in gold/exposure_intervals, keyed by snapshot; the other interval datasets are temporary Spark SQL views. Gold history is insert-only by product/snapshot; a commit manifest is appended last. Readers must pin a committed snapshot before reading history.
 
 ## Proposed production architecture
 
@@ -92,7 +95,7 @@ Proposed: managed Spark executors, shared object storage, replicated Kafka, vers
 7. Resolve packaging lineage: follow unit → carton → pallet → container memberships that overlap in time; report contradictory parents, level mismatches and cycles, and leave those memberships out.
 8. Keep every assignment and custody revision with provenance; report a sensor in two containers or two custodians at once and leave those out; list the units each assignment correction affects on both its former and revised side.
 9. Intersect the resolved product placement, sensor/container assignment, measured interval and product specification validity.
-10. Union overlapping intervals independently for expected presence, observed coverage and unsafe exposure. Sum elapsed seconds only after unioning.
+10. Union overlapping intervals independently for each metric (expected presence, coverage, excursion, calibration, specification, custody); cut missing, uncalibrated, unspecified and missing-custody time as interval differences. Persist every interval with the exact revisions of its source events, and sum seconds only from those intervals.
 11. Apply the illustrative excursion rule; carry missing coverage and latest inventory context.
 12. Insert product assessments keyed by snapshotId; write the manifest only after all assessments succeed.
 13. Consumers select max committed snapshotId and read only matching assessment-history records.
@@ -106,4 +109,4 @@ UNIT-A and UNIT-B share product code DRUG-DEMO and lot LOT-1, but occupy BOX-A a
 
 Implemented: explicit measured intervals, direct product-to-container placements, nested carton/pallet lineage with split/merge/repack over time and anomaly detection, sensor assignment revisions, cumulative excursion and coverage, latest known inventory, source quarantine, retained assessments and local tests.
 
-Implemented also: revisioned sensor assignment and container custody timelines with ambiguity detection and correction impact. Planned: custody transfer acknowledgements, unit conversion, calibration provenance, deletions/retractions, validated product-specific exposure models, regional/tenant isolation, real CDC connectors, clinical/quality approvals, query API, dashboards, notification delivery, immutable evidence version references, incremental impact processing and comprehensive integration/recovery tests.
+Implemented also: revisioned sensor assignment and container custody timelines with ambiguity detection and correction impact. Implemented also: interval evidence for every Gold duration with the exact revision, payload hash and Bronze coordinates of each source event. Planned: custody transfer acknowledgements, calibration provenance, deletions/retractions, validated product-specific exposure models, regional/tenant isolation, real CDC connectors, clinical/quality approvals, query API, dashboards, notification delivery, incremental impact processing and comprehensive integration/recovery tests.
