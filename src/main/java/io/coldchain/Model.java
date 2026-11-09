@@ -116,19 +116,30 @@ public final class Model {
  }
  // Gold assessments with their evidence: every merged interval behind each duration (gold/exposure_intervals) and every
  // elementary measured segment (silver/exposure_segments), both with exact source revisions.
+ // Version of the exposure calculation (intervals and durations); the outcome policy is versioned separately (Policy.VERSION).
+ public static final String RULE_VERSION="exposure-v4";
  public record Result(Dataset<Row> assessments,Dataset<Row> intervals,Dataset<Row> segments) {}
  public static Dataset<Row> assessments(SparkSession spark, Dataset<Row> events){return exposure(spark,events).assessments();}
+ // Views built from one checkpoint share its column IDs (productId above all), and without adaptive execution Spark cannot
+ // always join them apart. Aliasing every output column gives each view its own IDs before the views are joined.
+ static void fresh(SparkSession spark,String... views) {
+  for(String v:views) {
+   Dataset<Row> d=spark.table(v);
+   d.select(Arrays.stream(d.columns()).map(c->col(c).as(c)).toArray(Column[]::new)).createOrReplaceTempView(v);
+  }
+ }
  public static Result exposure(SparkSession spark, Dataset<Row> events) {
   // Materialize once: lineage, timelines and the segment joins below each read events several times, and without this
   // Spark re-plans the whole parse for every reference.
   events=events.localCheckpoint();
   events.createOrReplaceTempView("events");
   // Units are expected wherever a membership puts them; they are covered only through a chain that reaches a container.
-  Dataset<Row> edges=Lineage.edges(events);
-  Lineage.unitContainers(edges,Lineage.anomalies(edges)).localCheckpoint().createOrReplaceTempView("placements");
+  Dataset<Row> edges=Lineage.edges(events),chains=Lineage.paths(edges).localCheckpoint(),
+   lineageAnomalies=Lineage.anomalies(edges,chains).localCheckpoint();
+  Lineage.unitContainers(edges,lineageAnomalies).localCheckpoint().createOrReplaceTempView("placements");
   edges.filter("childLevel = 'UNIT'").createOrReplaceTempView("units");
   // Assignments and custody that contradict each other at some instant are left out (Timelines.anomalies).
-  Dataset<Row> timeline=Timelines.anomalies(events);
+  Dataset<Row> timeline=Timelines.anomalies(events).localCheckpoint();
   Timelines.usable(events,"ASSIGNMENT",timeline).localCheckpoint().createOrReplaceTempView("assignments");
   Timelines.usable(events,"CUSTODY",timeline).createOrReplaceTempView("custody");
   // One specification per product code and instant, after precedence (Specifications.effective).
@@ -246,43 +257,87 @@ public final class Model {
   spark.sql("SELECT productId, sort_array(collect_set(custodianId)) custodianIds FROM custodySegments GROUP BY productId")
    .createOrReplaceTempView("custodians");
   spark.sql("""
-   SELECT productId, location, status FROM (
+   SELECT productId, location, status, eventTime FROM (
     SELECT *,row_number() OVER(PARTITION BY productId ORDER BY eventTime DESC,revision DESC,eventId DESC) n
     FROM events WHERE kind='INVENTORY'
    ) WHERE n=1
    """).createOrReplaceTempView("inventory");
-  // Every reason that keeps a unit from NO_OBSERVED_EXCURSION, in a fixed order (docs/detailed-design.md section 5).
+  // Ambiguities that touch each unit, reported as flags whatever the outcome. Joined-back sides are re-aliased (Exposure.explained).
+  chains.filter("originLevel = 'UNIT'").selectExpr("origin","lineageIds").createOrReplaceTempView("unitPaths");
+  lineageAnomalies.selectExpr("explode(eventIds) flaggedId").createOrReplaceTempView("lineageFlags");
+  timeline.createOrReplaceTempView("timelineAnomalies");
+  Specifications.overlaps(events).filter("resolution = 'UNRESOLVED_SAME_APPROVAL_TIME'").createOrReplaceTempView("specificationTies");
+  spark.sql("""
+   SELECT DISTINCT u.origin productId, 'LINEAGE' ambiguity FROM (SELECT origin, explode(lineageIds) id FROM unitPaths) u
+   JOIN lineageFlags f ON f.flaggedId=u.id
+   UNION ALL
+   SELECT DISTINCT p.productId, 'ASSIGNMENT' FROM placements p JOIN (
+    SELECT e.c, t.a, t.b FROM (SELECT explode(eventIds) tid, startTime a, endTime b FROM timelineAnomalies WHERE anomaly='SENSOR_IN_TWO_CONTAINERS') t
+    JOIN (SELECT eventId eid, containerId c FROM events WHERE kind='ASSIGNMENT') e ON e.eid=t.tid) x
+    ON x.c=p.containerId AND greatest(p.startTime,x.a) < least(p.endTime,x.b)
+   UNION ALL
+   SELECT DISTINCT p.productId, 'CUSTODY' FROM placements p
+   JOIN (SELECT subjectId c, startTime a, endTime b FROM timelineAnomalies WHERE anomaly='CUSTODY_OVERLAP') x
+    ON x.c=p.containerId AND greatest(p.startTime,x.a) < least(p.endTime,x.b)
+   UNION ALL
+   SELECT DISTINCT p.productId, 'SPECIFICATION' FROM placements p
+   JOIN (SELECT productCode c, startTime a, endTime b FROM specificationTies) x
+    ON x.c=p.productCode AND greatest(p.startTime,x.a) < least(p.endTime,x.b)
+   """).createOrReplaceTempView("ambiguities");
+  spark.sql("""
+   SELECT productId, bool_or(ambiguity='LINEAGE') ambiguousLineage, bool_or(ambiguity='ASSIGNMENT') ambiguousAssignment,
+    bool_or(ambiguity='CUSTODY') ambiguousCustody, bool_or(ambiguity='SPECIFICATION') ambiguousSpecification
+   FROM ambiguities GROUP BY productId
+   """).createOrReplaceTempView("ambiguous");
+  // Excursion under each specification, beside its own allowance. The outcome compares the total with the smallest allowance.
+  spark.sql(Exposure.unionSeconds("(SELECT productId, specificationId, startTime, endTime FROM segments WHERE outOfRange)","productId,specificationId"))
+   .createOrReplaceTempView("specificationExcursions");
+  spark.sql("""
+   SELECT g.productId, sort_array(collect_list(named_struct('specificationId',g.specificationId,
+    'excursionSeconds',coalesce(x.s,0L),'allowedExcursionSeconds',g.maxExcursionSeconds))) excursionBySpecification
+   FROM (SELECT DISTINCT productId, specificationId, maxExcursionSeconds FROM segments
+    UNION SELECT productId, specificationId, maxExcursionSeconds FROM points) g
+   LEFT JOIN (SELECT productId p, specificationId sid, seconds s FROM specificationExcursions) x ON x.p=g.productId AND x.sid=g.specificationId
+   GROUP BY g.productId
+   """).createOrReplaceTempView("bySpecification");
+  // Inventory age is measured back from the newest source event in the snapshot, so it does not depend on when the batch ran.
+  spark.sql("""
+   SELECT i.productId, i.inventoryRecordedAt, unix_timestamp(a.asOf)-unix_timestamp(i.inventoryRecordedAt) inventoryAgeSeconds,
+    coalesce(m.lastMoved > i.inventoryRecordedAt,false) movedSinceInventory
+   FROM (SELECT productId, eventTime inventoryRecordedAt FROM inventory) i
+   CROSS JOIN (SELECT max(eventTime) asOf FROM events) a
+   LEFT JOIN (SELECT childId u, max(startTime) lastMoved FROM units GROUP BY childId) m ON m.u=i.productId
+   """).createOrReplaceTempView("inventoryAge");
+  spark.sql("""
+   SELECT productId, min(startTime) scopeStart, max(endTime) scopeEnd FROM exposureIntervals WHERE metric='EXPECTED' GROUP BY productId
+   """).createOrReplaceTempView("scopes");
+  fresh(spark,"metrics","evidence","inventory","custodians","calibrations","revisions","ambiguous","bySpecification","inventoryAge","scopes");
   spark.sql("""
    SELECT m.*, coalesce(e.allowedExcursionSeconds,0L) allowedExcursionSeconds, e.allowedExcursionSeconds allowed,
     coalesce(e.outOfRangePoints,0L) outOfRangePoints, coalesce(e.syntheticThresholds,false) syntheticThresholds,
     e.readingIds,e.assignmentIds,e.specificationIds,e.lineageIds,q.calibrationIds,q.maxUncertaintyC,c.custodianIds,
     coalesce(i.location,'UNKNOWN') location,coalesce(i.status,'UNKNOWN') inventoryStatus,
-    transform(v.sources,x -> named_struct('kind',x.kind,'eventId',x.eventId,'revision',x.revision,'payloadHash',x.payloadHash)) sourceRevisions
+    transform(v.sources,x -> named_struct('kind',x.kind,'eventId',x.eventId,'revision',x.revision,'payloadHash',x.payloadHash)) sourceRevisions,
+    coalesce(a.ambiguousLineage,false) ambiguousLineage, coalesce(a.ambiguousAssignment,false) ambiguousAssignment,
+    coalesce(a.ambiguousCustody,false) ambiguousCustody, coalesce(a.ambiguousSpecification,false) ambiguousSpecification,
+    b.excursionBySpecification, g.inventoryRecordedAt, g.inventoryAgeSeconds, coalesce(g.movedSinceInventory,false) movedSinceInventory,
+    o.scopeStart, o.scopeEnd
    FROM metrics m LEFT JOIN evidence e USING(productId) LEFT JOIN inventory i USING(productId) LEFT JOIN custodians c USING(productId)
-    LEFT JOIN calibrations q USING(productId) LEFT JOIN revisions v USING(productId)
+    LEFT JOIN calibrations q USING(productId) LEFT JOIN revisions v USING(productId) LEFT JOIN ambiguous a USING(productId)
+    LEFT JOIN bySpecification b USING(productId) LEFT JOIN inventoryAge g USING(productId) LEFT JOIN scopes o USING(productId)
    """).createOrReplaceTempView("assessed");
-  Dataset<Row> gold=spark.sql("""
-   SELECT *, CASE WHEN array_contains(assessmentReasons,'EXCURSION_ABOVE_ALLOWANCE') OR array_contains(assessmentReasons,'OUT_OF_RANGE_POINT')
-     THEN 'QUALITY_REVIEW' WHEN size(assessmentReasons) > 0 OR allowed IS NULL THEN 'INSUFFICIENT_DATA'
-     ELSE 'NO_OBSERVED_EXCURSION' END assessment,
-    'exposure-v4' ruleVersion
-   FROM (SELECT *, filter(array(
-     IF(excursionSeconds > allowed,'EXCURSION_ABOVE_ALLOWANCE',NULL),
-     IF(outOfRangePoints > 0,'OUT_OF_RANGE_POINT',NULL),
-     IF(missingSeconds > 0,'MISSING_COVERAGE',NULL),
-     IF(unspecifiedSeconds > 0,'MISSING_SPECIFICATION',NULL),
-     IF(uncalibratedSeconds > 0,'UNCALIBRATED_MEASUREMENT',NULL),
-     IF(possibleExcursionSeconds > allowed AND NOT excursionSeconds > allowed,'WITHIN_MEASUREMENT_UNCERTAINTY',NULL)),
-    r -> r IS NOT NULL) assessmentReasons FROM assessed)
-   """).drop("allowed").withColumn("assessmentHash",sha2(to_json(struct(col("expectedSeconds"),col("coveredSeconds"),
+  // Reasons, flags and the outcome come from the policy (Policy.java, docs/detailed-design.md section 5).
+  Dataset<Row> gold=spark.sql(Policy.apply("assessed")).withColumn("ruleVersion",lit(RULE_VERSION))
+   .drop("allowed").withColumn("assessmentHash",sha2(to_json(struct(col("expectedSeconds"),col("coveredSeconds"),
     col("excursionSeconds"),col("allowedExcursionSeconds"),col("assessment"),col("location"),
     col("inventoryStatus"),col("readingIds"),col("assignmentIds"),col("specificationIds"),col("lineageIds"),
     col("missingCustodySeconds"),col("custodianIds"),col("possibleExcursionSeconds"),col("uncalibratedSeconds"),
     col("unspecifiedSeconds"),col("outOfRangePoints"),col("calibrationIds"),col("maxUncertaintyC"),col("syntheticThresholds"),
-    col("assessmentReasons"),col("sourceRevisions"),col("ruleVersion"))),256));
+    col("assessmentReasons"),col("sourceRevisions"),col("dataQualityFlags"),col("excursionBySpecification"),col("inventoryRecordedAt"),
+    col("inventoryAgeSeconds"),col("scopeStart"),col("scopeEnd"),col("assessmentScope"),col("policyVersion"),col("ruleVersion"))),256));
   Dataset<Row> segments=spark.sql(Exposure.revisions("segments",
    "productId,startTime,endTime,lineageIds,assignmentId,sensorId,readingId,specificationId,temperatureC,minC,maxC,outOfRange","events"))
    .withColumn("seconds",expr("unix_timestamp(endTime)-unix_timestamp(startTime)"));
-  return new Result(gold,intervals.withColumn("ruleVersion",lit("exposure-v4")),segments);
+  return new Result(gold,intervals.withColumn("ruleVersion",lit(RULE_VERSION)),segments);
  }
 }

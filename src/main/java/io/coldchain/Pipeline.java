@@ -13,6 +13,9 @@ public final class Pipeline {
    .config("spark.sql.catalog.spark_catalog","org.apache.spark.sql.delta.catalog.DeltaCatalog")
    .config("spark.sql.session.timeZone","UTC").config("spark.sql.shuffle.partitions",2)
    .config("spark.databricks.delta.snapshotPartitions",2)
+   // Structured Streaming turns adaptive execution off inside foreachBatch. Off everywhere, the tests analyze plans the same
+   // way the streaming job does (a self-join of checkpointed views failed only there before this).
+   .config("spark.sql.adaptive.enabled",false)
    // Demo thresholds apply only where the deployment opts in (the Compose demo does).
    .config(Specifications.ALLOW_SYNTHETIC,Boolean.parseBoolean(System.getenv("ALLOW_SYNTHETIC_SPECS"))).getOrCreate();
   s.sparkContext().setLogLevel("WARN");return s;
@@ -86,6 +89,8 @@ public final class Pipeline {
   // Interval evidence is kept per snapshot, like the assessments it explains, so a superseded assessment stays traceable.
   merge(s,exposure.intervals().withColumn("snapshotId",lit(id)),DATA+"/gold/exposure_intervals",
    "t.productId=s.productId AND t.snapshotId=s.snapshotId AND t.metric=s.metric AND t.startTime=s.startTime");
+  // The policy each assessment names by policyVersion; one row per version, never rewritten.
+  merge(s,Policy.table(s,Model.RULE_VERSION),DATA+"/gold/assessment_policies","t.policyVersion=s.policyVersion");
   Dataset<Row> assessed=exposure.assessments().withColumn("snapshotId",lit(id)).cache();
   merge(s,assessed,DATA+"/gold/assessment_history","t.productId=s.productId AND t.snapshotId=s.snapshotId");
   // Manifest is written last. Readers must use history filtered by a committed snapshotId.
