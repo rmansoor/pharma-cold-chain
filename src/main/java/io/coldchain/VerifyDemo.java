@@ -1,10 +1,12 @@
 package io.coldchain;
+import java.util.*;
 import io.delta.tables.DeltaTable;
 import org.apache.spark.sql.*;
 import static org.apache.spark.sql.functions.*;
 public final class VerifyDemo {
  public static void main(String[] args)throws Exception {
   SparkSession s=Pipeline.session("Cold-chain verifier");long end=System.nanoTime()+180_000_000_000L;
+  String failing="no committed snapshot";
   String base=Pipeline.DATA;
   while(System.nanoTime()<end) {
    if(DeltaTable.isDeltaTable(s,base+"/gold/commits")) {
@@ -64,7 +66,15 @@ public final class VerifyDemo {
      && commit.<Long>getAs("products")==now.count() && digest.equals(commit.getAs("evidenceDigest"))
      && commit.getList(commit.fieldIndex("sourceHighWatermarks")).size()>0
      && Snapshots.recorded(commit,"bronze/events")!=null && Snapshots.recorded(commit,"gold/assessment_history")!=null;
-    if(before&&a&&b&&nested&&dlq&&resolved&&invalidated&&custody&&quality&&traced&&policy&&published) {
+    // Name the checks that fail, whenever that set changes, so a timeout says what never became true.
+    Map<String,Boolean> checks=new LinkedHashMap<>();
+    checks.put("before",before);checks.put("a",a);checks.put("b",b);checks.put("nested",nested);checks.put("dlq",dlq);checks.put("resolved",resolved);
+    checks.put("invalidated",invalidated);checks.put("custody",custody);checks.put("quality",quality);checks.put("traced",traced);
+    checks.put("policy",policy);checks.put("published",published);
+    String now_failing="snapshot "+latest+": "+String.join(",",checks.entrySet().stream().filter(e->!e.getValue()).map(Map.Entry::getKey).toList());
+    if(!now_failing.equals(failing))System.out.println("waiting on "+now_failing);
+    failing=now_failing;
+    if(!checks.containsValue(false)) {
      now.orderBy("productId").show(false);
      System.out.println("Pinned snapshot "+latest+": lineage "+commit.getAs("lineageId")+", run "+commit.getAs("runId")+", code "+commit.getAs("codeVersion")
       +", evidence "+commit.getAs("evidenceRevisions")+" revisions, tables "+commit.getList(commit.fieldIndex("tableVersions")));
@@ -73,6 +83,6 @@ public final class VerifyDemo {
    }
    Thread.sleep(3000);
   }
-  s.stop();throw new AssertionError("Scenario incomplete. Use a fresh deployment and allow the initial phase to commit before correction.");
+  s.stop();throw new AssertionError("Scenario incomplete ("+failing+"). Use a fresh deployment and allow the initial phase to commit before correction.");
  }
 }
