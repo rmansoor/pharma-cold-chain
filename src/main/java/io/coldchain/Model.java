@@ -108,18 +108,24 @@ public final class Model {
   return quarantine.withColumn("caseType",lit("INVALID_CONTRACT")).selectExpr(cols).unionByName(cases.selectExpr(cols));
  }
  public static Dataset<Row> canonical(Dataset<Row> valid) {
-  // The highest revision wins regardless of arrival order; gaps between revisions are allowed.
+  // The highest revision wins regardless of arrival order; gaps between revisions are allowed. Copies of that revision all
+  // carry the same payload (a different one is a conflict, withheld above), so the first arrival is kept: a retry changes
+  // nothing, not even the source coordinates evidence cites.
   return valid.join(conflicts(valid),"eventId","left_anti")
    .withColumn("rn",row_number().over(Window.partitionBy("eventId")
-    .orderBy(col("revision").desc(),col("kafkaTime").desc(),col("partition").desc(),col("offset").desc())))
+    .orderBy(col("revision").desc(),col("kafkaTime").asc(),col("partition").asc(),col("offset").asc())))
    .filter("rn=1").drop("rn","valid","reasons");
  }
  // Gold assessments with their evidence: every merged interval behind each duration (gold/exposure_intervals) and every
- // elementary measured segment (silver/exposure_segments), both with exact source revisions.
+ // elementary measured segment (gold/exposure_segments), both with exact source revisions.
  // Version of the exposure calculation (intervals and durations); the outcome policy is versioned separately (Policy.VERSION).
  public static final String RULE_VERSION="exposure-v4";
  public record Result(Dataset<Row> assessments,Dataset<Row> intervals,Dataset<Row> segments) {}
- public static Dataset<Row> assessments(SparkSession spark, Dataset<Row> events){return exposure(spark,events).assessments();}
+ // Assessments of every unit in events, as of the newest event among them. Persisted assessments are stored without the
+ // dataAsOf-dependent fields, which Snapshots derives from the manifest when a snapshot is read.
+ public static Dataset<Row> assessments(SparkSession spark, Dataset<Row> events) {
+  return Policy.asOf(exposure(spark,events).assessments(),lit(events.agg(max("eventTime")).first().getTimestamp(0)));
+ }
  // Views built from one checkpoint share its column IDs (productId above all), and without adaptive execution Spark cannot
  // always join them apart. Aliasing every output column gives each view its own IDs before the views are joined.
  static void fresh(SparkSession spark,String... views) {
@@ -300,12 +306,10 @@ public final class Model {
    LEFT JOIN (SELECT productId p, specificationId sid, seconds s FROM specificationExcursions) x ON x.p=g.productId AND x.sid=g.specificationId
    GROUP BY g.productId
    """).createOrReplaceTempView("bySpecification");
-  // Inventory age is measured back from the newest source event in the snapshot, so it does not depend on when the batch ran.
+  // When the inventory was recorded and whether the unit moved since; its age depends on the snapshot (Policy.asOf).
   spark.sql("""
-   SELECT i.productId, i.inventoryRecordedAt, unix_timestamp(a.asOf)-unix_timestamp(i.inventoryRecordedAt) inventoryAgeSeconds,
-    coalesce(m.lastMoved > i.inventoryRecordedAt,false) movedSinceInventory
+   SELECT i.productId, i.inventoryRecordedAt, coalesce(m.lastMoved > i.inventoryRecordedAt,false) movedSinceInventory
    FROM (SELECT productId, eventTime inventoryRecordedAt FROM inventory) i
-   CROSS JOIN (SELECT max(eventTime) asOf FROM events) a
    LEFT JOIN (SELECT childId u, max(startTime) lastMoved FROM units GROUP BY childId) m ON m.u=i.productId
    """).createOrReplaceTempView("inventoryAge");
   spark.sql("""
@@ -320,7 +324,7 @@ public final class Model {
     transform(v.sources,x -> named_struct('kind',x.kind,'eventId',x.eventId,'revision',x.revision,'payloadHash',x.payloadHash)) sourceRevisions,
     coalesce(a.ambiguousLineage,false) ambiguousLineage, coalesce(a.ambiguousAssignment,false) ambiguousAssignment,
     coalesce(a.ambiguousCustody,false) ambiguousCustody, coalesce(a.ambiguousSpecification,false) ambiguousSpecification,
-    b.excursionBySpecification, g.inventoryRecordedAt, g.inventoryAgeSeconds, coalesce(g.movedSinceInventory,false) movedSinceInventory,
+    b.excursionBySpecification, g.inventoryRecordedAt, coalesce(g.movedSinceInventory,false) movedSinceInventory,
     o.scopeStart, o.scopeEnd
    FROM metrics m LEFT JOIN evidence e USING(productId) LEFT JOIN inventory i USING(productId) LEFT JOIN custodians c USING(productId)
     LEFT JOIN calibrations q USING(productId) LEFT JOIN revisions v USING(productId) LEFT JOIN ambiguous a USING(productId)
@@ -334,7 +338,7 @@ public final class Model {
     col("missingCustodySeconds"),col("custodianIds"),col("possibleExcursionSeconds"),col("uncalibratedSeconds"),
     col("unspecifiedSeconds"),col("outOfRangePoints"),col("calibrationIds"),col("maxUncertaintyC"),col("syntheticThresholds"),
     col("assessmentReasons"),col("sourceRevisions"),col("dataQualityFlags"),col("excursionBySpecification"),col("inventoryRecordedAt"),
-    col("inventoryAgeSeconds"),col("scopeStart"),col("scopeEnd"),col("assessmentScope"),col("policyVersion"),col("ruleVersion"))),256));
+    col("movedSinceInventory"),col("scopeStart"),col("scopeEnd"),col("assessmentScope"),col("policyVersion"),col("ruleVersion"))),256));
   Dataset<Row> segments=spark.sql(Exposure.revisions("segments",
    "productId,startTime,endTime,lineageIds,assignmentId,sensorId,readingId,specificationId,temperatureC,minC,maxC,outOfRange","events"))
    .withColumn("seconds",expr("unix_timestamp(endTime)-unix_timestamp(startTime)"));

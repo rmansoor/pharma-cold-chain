@@ -108,7 +108,7 @@ class PublicationTest {
   for(Row m:commit.<Row>getList(commit.fieldIndex("sourceHighWatermarks")))marks.add(m.getAs("topic")+"/"+m.getAs("partition")+"@"+m.getAs("maxOffset"));
   assertEquals(List.of("coldchain.inventory/0@5","coldchain.sensors/0@12","coldchain.specifications/0@0","coldchain.traceability/0@13"),marks);
   // Recorded versions are the versions written: reading at them gives exactly the published rows.
-  for(String t:List.of("bronze/events","silver/events_current","silver/exposure_segments",Snapshots.HISTORY,Snapshots.INTERVALS,"gold/assessment_policies"))
+  for(String t:List.of("bronze/events","silver/events_current",Snapshots.SEGMENTS,Snapshots.HISTORY,Snapshots.INTERVALS,"gold/assessment_policies"))
    assertNotNull(Snapshots.recorded(commit,t),t);
   assertEquals(Pipeline.version(s,d+"/bronze/events"),(long)Snapshots.recorded(commit,"bronze/events"));
   Row earlier=s.read().format("delta").load(d+"/"+Snapshots.COMMITS).filter("snapshotId = 0").first();
