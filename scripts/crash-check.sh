@@ -54,7 +54,10 @@ echo "PASS: crash after Bronze commit replayed batch 0; $examples offsets ingest
 # Phase 2: crash batch 1 after its Gold history is written, before its manifest.
 dc stop pipeline >/dev/null 2>&1
 FAIL_AT=history:1 dc up -d pipeline >/dev/null 2>&1
-publish contracts/examples/reading.json
+# A correction (revision 2 of the example reading), so the incremental snapshot recomputes the units that sensor measured.
+correction=$(mktemp)
+sed -E 's/"revision": 1/"revision": 2/; s/"temperatureC": 5.4/"temperatureC": 9.4/' contracts/examples/reading.json >"$correction"
+publish "$correction"; rm -f "$correction"
 stopped || fail "pipeline did not stop at the injected history failure"
 dc logs pipeline | grep -q "INJECTED FAILURE after history batch=1" || fail "pipeline exited without the injected history failure"
 partial=$(state); echo "partial: $partial"
@@ -68,7 +71,8 @@ done
 echo "published: $published"
 [[ $(field "$published" lastSnapshot) -eq 1 && $(field "$published" commits) -eq 2 ]] || fail "snapshot 1 was not published after the restart"
 [[ $(field "$published" uncommitted) -eq 0 ]] || fail "rows without a manifest remain"
-[[ $(field "$published" history) -eq $(( $(field "$resumed" visible) + $(field "$published" visible) )) ]] || fail "the retry duplicated Gold history"
+# The restart deletes the unpublished rows and writes the same ones again: no duplicate, nothing lost.
+[[ $(field "$published" history) -eq $(field "$partial" history) ]] || fail "the retry duplicated or lost Gold history"
 [[ $(field "$published" bronze) -eq $((examples+1)) ]] || fail "Bronze rows lost or duplicated"
 dc --profile demo down -v >/dev/null 2>&1
 echo "PASS: crash before the manifest left snapshot 1 invisible; the restart published it once with no duplicate rows."

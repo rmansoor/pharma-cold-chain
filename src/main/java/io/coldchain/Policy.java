@@ -2,6 +2,7 @@ package io.coldchain;
 import java.util.*;
 import org.apache.spark.sql.*;
 import org.apache.spark.sql.types.*;
+import static org.apache.spark.sql.functions.*;
 
 // The assessment policy: what each outcome means, which reasons lead to it, and the data-quality flags reported beside it.
 // Gold's assessment SQL and gold/assessment_policies are both built from these lists, so they cannot disagree. No outcome is
@@ -41,9 +42,18 @@ public final class Policy {
   new Item("AMBIGUOUS_SPECIFICATION",null,"ambiguousSpecification","Specifications approved at the same instant overlap the unit's located time"),
   new Item("MIXED_SPECIFICATIONS",null,"size(specificationIds) > 1","More than one specification applied; see excursionBySpecification"),
   new Item("MISSING_CUSTODY",null,"missingCustodySeconds > 0","Some located time has no recorded custodian"),
-  new Item("UNKNOWN_INVENTORY",null,"inventoryRecordedAt IS NULL","No inventory record exists for the unit"),
+  new Item("UNKNOWN_INVENTORY",null,"inventoryRecordedAt IS NULL","No inventory record exists for the unit"));
+ // Flags that depend on the snapshot's dataAsOf (the newest source event anywhere), not only on the unit's own evidence.
+ // They are derived when a snapshot is read (asOf), so a stored assessment does not change whenever a newer event arrives
+ // for some other unit. They follow FLAGS in the reported order.
+ static final List<Item> AS_OF_FLAGS=List.of(
   new Item("STALE_INVENTORY",null,"inventoryRecordedAt IS NOT NULL AND (inventoryAgeSeconds > "+MAX_INVENTORY_AGE_SECONDS+" OR movedSinceInventory)",
    "The inventory record is older than the policy allows, or the unit moved after it was recorded"));
+ // Stored assessments as of a snapshot: inventory age measured back from dataAsOf, and the flags that depend on it.
+ public static Dataset<Row> asOf(Dataset<Row> stored,Column dataAsOf) {
+  return stored.withColumn("inventoryAgeSeconds",unix_timestamp(dataAsOf).minus(unix_timestamp(col("inventoryRecordedAt"))))
+   .withColumn("dataQualityFlags",concat(col("dataQualityFlags"),expr(codes(AS_OF_FLAGS))));
+ }
  static String codes(List<Item> items) {
   StringJoiner j=new StringJoiner(",","filter(array(","),r -> r IS NOT NULL)");
   for(Item i:items)j.add("IF(coalesce("+i.when()+",false),'"+i.code()+"',NULL)");
@@ -69,7 +79,8 @@ public final class Policy {
   StructType schema=new StructType().add("policyVersion","string").add("ruleVersion","string").add("assessmentScope","string")
    .add("maxInventoryAgeSeconds","long").add("states",DataTypes.createArrayType(state))
    .add("reasons",DataTypes.createArrayType(ENTRY)).add("flags",DataTypes.createArrayType(ENTRY));
-  return spark.createDataFrame(List.of(RowFactory.create(VERSION,ruleVersion,SCOPE,MAX_INVENTORY_AGE_SECONDS,states,rows(REASONS),rows(FLAGS))),schema);
+  List<Row> flags=new ArrayList<>(rows(FLAGS));flags.addAll(rows(AS_OF_FLAGS));
+  return spark.createDataFrame(List.of(RowFactory.create(VERSION,ruleVersion,SCOPE,MAX_INVENTORY_AGE_SECONDS,states,rows(REASONS),flags)),schema);
  }
  static List<Row> rows(List<Item> items){return items.stream().map(i->RowFactory.create(i.code(),i.state(),i.when(),i.meaning())).toList();}
 }

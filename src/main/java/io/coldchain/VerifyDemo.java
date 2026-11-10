@@ -48,8 +48,10 @@ public final class VerifyDemo {
     if(traced) {
      Dataset<Row> intervals=s.read().format("delta").load(base+"/gold/exposure_intervals").join(s.read().format("delta").load(base+"/gold/commits").select("snapshotId"),"snapshotId","left_semi");
      String assign="exists(sources,x -> x.kind='ASSIGNMENT' AND x.eventId='assign' AND x.revision=%d)";
-     traced=intervals.filter(col("snapshotId").equalTo(latest)).filter("productId='UNIT-B' AND metric='EXCURSION' AND seconds=600 AND "+assign.formatted(2)).count()==1
-      && intervals.filter(col("snapshotId").equalTo(latest)).filter("productId='UNIT-A' AND metric='MISSING' AND seconds=600").count()==1
+     // The pinned snapshot's intervals: each unit's come from the snapshot that last recomputed it.
+     Dataset<Row> pinned=Snapshots.intervals(s,base,commit);
+     traced=pinned.filter("productId='UNIT-B' AND metric='EXCURSION' AND seconds=600 AND "+assign.formatted(2)).count()==1
+      && pinned.filter("productId='UNIT-A' AND metric='MISSING' AND seconds=600").count()==1
       && intervals.filter("productId='UNIT-A' AND metric='EXCURSION' AND "+assign.formatted(1)).count()>0;
     }
     // Outcomes name a persisted policy that releases nothing, and flags are reported beside them whatever the outcome.
@@ -65,7 +67,9 @@ public final class VerifyDemo {
     boolean published=!"unattached".equals(commit.getAs("lineageId")) && commit.getAs("runId")!=null
      && commit.<Long>getAs("products")==now.count() && digest.equals(commit.getAs("evidenceDigest"))
      && commit.getList(commit.fieldIndex("sourceHighWatermarks")).size()>0
-     && Snapshots.recorded(commit,"bronze/events")!=null && Snapshots.recorded(commit,"gold/assessment_history")!=null;
+     && Snapshots.recorded(commit,"bronze/events")!=null && Snapshots.recorded(commit,"gold/assessment_history")!=null
+     // The correction was applied incrementally, not by recomputing everything.
+     && "INCREMENTAL".equals(commit.getAs("recomputeMode"));
     // Name the checks that fail, whenever that set changes, so a timeout says what never became true.
     Map<String,Boolean> checks=new LinkedHashMap<>();
     checks.put("before",before);checks.put("a",a);checks.put("b",b);checks.put("nested",nested);checks.put("dlq",dlq);checks.put("resolved",resolved);
@@ -76,7 +80,8 @@ public final class VerifyDemo {
     failing=now_failing;
     if(!checks.containsValue(false)) {
      now.orderBy("productId").show(false);
-     System.out.println("Pinned snapshot "+latest+": lineage "+commit.getAs("lineageId")+", run "+commit.getAs("runId")+", code "+commit.getAs("codeVersion")
+     System.out.println("Pinned snapshot "+latest+" ("+commit.getAs("recomputeMode")+", "+commit.getAs("recomputedProducts")+" units recomputed for "
+      +commit.getAs("changedEvents")+" changed events): lineage "+commit.getAs("lineageId")+", run "+commit.getAs("runId")+", code "+commit.getAs("codeVersion")
       +", evidence "+commit.getAs("evidenceRevisions")+" revisions, tables "+commit.getList(commit.fieldIndex("tableVersions")));
      System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; synthetic thresholds flagged and calibrated reading used; exposure intervals traced to exact revisions; outcomes name a policy that releases nothing, with data-quality flags beside them; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision; manifest identifies lineage, run, high-watermarks, table versions and evidence.");s.stop();return;
     }

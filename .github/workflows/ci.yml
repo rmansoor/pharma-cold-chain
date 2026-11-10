@@ -30,6 +30,8 @@ jobs:
       - run: docker compose up -d --build pipeline
       - run: docker compose --profile demo run --rm simulator
       - run: docker compose --profile demo run --rm verify
+      # Full recomputation of the same Bronze history in a separate namespace must match the incremental snapshot.
+      - run: docker compose --profile demo run --rm verify io.coldchain.Replay /data /tmp/replay
       - run: scripts/restart-check.sh pharma-cold-chain
       - name: Crash after Bronze commit and before a Gold manifest, then replay
         run: docker compose down -v && scripts/crash-check.sh
