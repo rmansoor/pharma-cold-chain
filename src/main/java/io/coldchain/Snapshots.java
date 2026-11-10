@@ -121,6 +121,7 @@ public final class Snapshots {
   if(!incremental(previous)||recorded(previous,"silver/events_current")==null)return "PREVIOUS_SNAPSHOT_FORMAT";
   if(!Model.RULE_VERSION.equals(previous.getAs("ruleVersion")))return "RULE_VERSION_CHANGED";
   if(!Policy.VERSION.equals(previous.getAs("policyVersion")))return "POLICY_VERSION_CHANGED";
+  if(!Arrays.asList(previous.schema().fieldNames()).contains("rowVersion")||!Model.ROW_VERSION.equals(previous.getAs("rowVersion")))return "ROW_VERSION_CHANGED";
   if(!code.equals(previous.getAs("codeVersion")))return "CODE_VERSION_CHANGED";
   if(allowSynthetic!=previous.<Boolean>getAs("allowSyntheticSpecifications"))return "CONFIGURATION_CHANGED";
   return null;
@@ -136,7 +137,7 @@ public final class Snapshots {
   Dataset<Row> asOf=current.agg(max("eventTime").alias("dataAsOf"));
   return marks.crossJoin(digests).crossJoin(asOf).select(lit(id).alias("snapshotId"),current_timestamp().alias("committedAt"),
    col("products"),lit(lineage).alias("lineageId"),lit(run).alias("runId"),lit(code).alias("codeVersion"),lit(Model.RULE_VERSION).alias("ruleVersion"),
-   lit(Policy.VERSION).alias("policyVersion"),lit(allowSynthetic).alias("allowSyntheticSpecifications"),lit(mode).alias("recomputeMode"),
+   lit(Policy.VERSION).alias("policyVersion"),lit(Model.ROW_VERSION).alias("rowVersion"),lit(allowSynthetic).alias("allowSyntheticSpecifications"),lit(mode).alias("recomputeMode"),
    lit(reason).cast("string").alias("recomputeReason"),lit(changed).alias("changedEvents"),lit(recomputed).alias("recomputedProducts"),
    col("dataAsOf"),col("sourceHighWatermarks"),expr(tables.toString()).alias("tableVersions"),
    col("evidenceRevisions"),col("evidenceDigest"),col("assessmentsDigest"),col("intervalsDigest"));

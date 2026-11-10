@@ -26,4 +26,4 @@ Needs about 4 GB of Docker memory. Versions, measured resources and the restart 
 
 Host Kafka: localhost:29092. Spark UI: localhost:4041. New project volumes are separate from the earlier fraud project. Each batch still rebuilds Silver from all retained Bronze, but recomputes Gold only for the units its changes can affect; `io.coldchain.Replay` recomputes everything into an isolated namespace as the reference. Synthetic thresholds are not product-handling guidance. No clinical decisions, automatic recalls or compliance certification are implemented.
 
-39 local Spark transformation and contract tests pass (`mvn -s maven-settings.xml -B test`). CI also runs the Compose demo, restart and crash checks. Jira: epic SID-12, stories SID-13..SID-28 (see docs/jira-backlog.json).
+42 local Spark transformation and contract tests pass (`mvn -s maven-settings.xml -B test`). CI also runs the Compose demo, restart and crash checks. Jira: epic SID-12, stories SID-13..SID-28 (see docs/jira-backlog.json).

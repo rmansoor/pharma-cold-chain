@@ -32,7 +32,10 @@ public final class Simulator {
    event("custody-A-1","CUSTODY","containerId","BOX-A","custodianId","CARRIER-1","startTime",a,"endTime","2026-01-01T12:05:00Z"),
    event("custody-A-2","CUSTODY","containerId","BOX-A","custodianId","WAREHOUSE-1","startTime","2026-01-01T12:05:00Z","endTime",b),
    // SENSOR-1 holds a calibration valid for the whole demo, with ±0.5 °C expanded uncertainty.
-   event("calibration-1","CALIBRATION","sensorId","SENSOR-1","startTime","2025-12-01T00:00:00Z","endTime","2026-12-01T00:00:00Z","uncertaintyC",0.5));
+   event("calibration-1","CALIBRATION","sensorId","SENSOR-1","startTime","2025-12-01T00:00:00Z","endTime","2026-12-01T00:00:00Z","uncertaintyC",0.5),
+   // BOX-B, with UNIT-B in it, leaves for HOSPITAL-DEMO at 12:09 and arrives at 13:00.
+   event("shipment-B","SHIPMENT","shipmentId","SHP-DEMO","recipientId","HOSPITAL-DEMO","containerId","BOX-B",
+    "startTime","2026-01-01T12:09:00Z","endTime","2026-01-01T13:00:00Z"));
  }
  // Declares the producing system so Bronze provenance does not fall back to the topic owner.
  static ProducerRecord<String,String> record(String topic,String key,String value) {

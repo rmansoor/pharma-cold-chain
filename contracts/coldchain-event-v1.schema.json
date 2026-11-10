@@ -8,7 +8,7 @@
   "properties": {
     "eventId": {"$ref": "#/$defs/id", "description": "Globally unique across all kinds; keeps one kind across revisions"},
     "revision": {"type": "integer", "minimum": 1, "description": "Correction counter; the highest revision supersedes. A retry of the same eventId and revision must carry the same semantic payload"},
-    "kind": {"enum": ["READING", "PLACEMENT", "ASSIGNMENT", "SPEC", "INVENTORY", "PACKING", "CUSTODY", "CALIBRATION"]},
+    "kind": {"enum": ["READING", "PLACEMENT", "ASSIGNMENT", "SPEC", "INVENTORY", "PACKING", "CUSTODY", "CALIBRATION", "SHIPMENT"]},
     "eventTime": {"$ref": "#/$defs/time", "description": "When the source recorded the fact; at most 5 minutes after the Kafka record timestamp"},
     "productId": {"$ref": "#/$defs/id", "description": "Serialized saleable unit"},
     "productCode": {"$ref": "#/$defs/id", "description": "Product (SKU) code that specifications apply to"},
@@ -31,7 +31,9 @@
     "childLevel": {"enum": ["UNIT", "CARTON", "PALLET"]},
     "parentId": {"$ref": "#/$defs/id", "description": "The packaging that holds the child"},
     "parentLevel": {"enum": ["CARTON", "PALLET", "CONTAINER"], "description": "Must be above childLevel in UNIT < CARTON < PALLET < CONTAINER"},
-    "custodianId": {"$ref": "#/$defs/id", "description": "Organization or site responsible for the container"}
+    "custodianId": {"$ref": "#/$defs/id", "description": "Organization or site responsible for the container"},
+    "shipmentId": {"$ref": "#/$defs/id", "description": "SHIPMENT: the shipment this line belongs to; several lines can share it"},
+    "recipientId": {"$ref": "#/$defs/id", "description": "SHIPMENT: the receiving organization or site (a pharmacy or hospital), never a patient"}
   },
   "allOf": [
     {"if": {"properties": {"kind": {"const": "READING"}}}, "then": {"required": ["sensorId", "startTime", "endTime"], "oneOf": [{"required": ["temperatureC"], "not": {"anyOf": [{"required": ["temperature"]}, {"required": ["temperatureUnit"]}]}}, {"required": ["temperature", "temperatureUnit"], "not": {"required": ["temperatureC"]}}], "description": "Topic coldchain.sensors; endTime at most 5 minutes after the Kafka record timestamp; startTime = endTime is a point observation"}},
@@ -42,7 +44,8 @@
     {"if": {"properties": {"kind": {"const": "INVENTORY"}}}, "then": {"required": ["productId", "location", "status"], "description": "Topic coldchain.inventory"}},
     {"if": {"properties": {"kind": {"const": "CUSTODY"}}}, "then": {"required": ["containerId", "custodianId", "startTime", "endTime"], "description": "Topic coldchain.traceability"}},
     {"if": {"properties": {"kind": {"const": "PACKING"}}}, "then": {"required": ["childId", "childLevel", "parentId", "parentLevel", "startTime", "endTime"], "description": "Topic coldchain.traceability; childId differs from parentId and parentLevel is above childLevel (both enforced in code)"}},
-    {"if": {"properties": {"kind": {"const": "PACKING"}, "childLevel": {"const": "UNIT"}}, "required": ["childLevel"]}, "then": {"required": ["productCode", "lotId"], "description": "A packed unit carries its product code and lot"}}
+    {"if": {"properties": {"kind": {"const": "PACKING"}, "childLevel": {"const": "UNIT"}}, "required": ["childLevel"]}, "then": {"required": ["productCode", "lotId"], "description": "A packed unit carries its product code and lot"}},
+    {"if": {"properties": {"kind": {"const": "SHIPMENT"}}}, "then": {"required": ["shipmentId", "recipientId", "startTime", "endTime"], "oneOf": [{"required": ["containerId"], "not": {"required": ["productId"]}}, {"required": ["productId"], "not": {"required": ["containerId"]}}], "description": "Topic coldchain.traceability; startTime is dispatch and endTime delivery. A container line ships every unit in the container at dispatch"}}
   ],
   "$defs": {
     "id": {"type": "string", "pattern": "\\S"},
