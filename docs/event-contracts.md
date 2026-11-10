@@ -159,6 +159,10 @@ Because revisions only grow, a resolved case cannot reopen. A new dispute at a h
 
 `silver/case_log` is the audit trail. It is insert-only on (caseId, status), so it keeps the snapshot and time at which each case was first seen OPEN and first seen RESOLVED, with the resolution rule and the revision that resolved it. Replaying a batch adds nothing.
 
+## Review items (output)
+
+The pipeline publishes one output contract: review items on `coldchain.review-items`, keyed by productId, with a `delivery-id` header. `contracts/review-item-v1.schema.json` defines them and `contracts/review-items/` holds a REVISED and a WITHDRAWN example taken from the pipeline's output; AlertTest checks that the examples parse into `Outbox.ITEM` unchanged. Delivery is at least once, so consumers must deduplicate on deliveryId and order an item's revisions by snapshotId (detailed-design section 9).
+
 ## Where each rule is enforced
 
 The JSON Schema covers per-field rules: presence, type, non-whitespace identifiers, enums, ranges and whole-second bounds. These rules are enforced only in code because JSON Schema cannot express them: startTime < endTime, minC ≤ maxC, parent level above child level, childId ≠ parentId, kind-to-topic mapping, the 5-minute skew against the Kafka timestamp, and the revision/conflict rules. The schema is not yet run against live traffic; it documents the contract, and the examples are checked against both the schema and the code.

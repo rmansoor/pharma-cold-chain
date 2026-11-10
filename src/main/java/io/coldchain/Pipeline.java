@@ -71,6 +71,8 @@ public final class Pipeline {
   if(halt)Runtime.getRuntime().halt(1);
   throw new IllegalStateException("injected failure after "+stage+" batch="+id);
  }
+ // Where committed review items are relayed (Outbox); Kafka in the deployment, none in tests unless a test sets one.
+ static Outbox.Sink relay;
  public static void process(Dataset<Row> batch,long id) {
   String query=batch.sparkSession().sparkContext().getLocalProperty("sql.streaming.queryId");
   process(batch,id,query==null?"unattached":query);
@@ -121,7 +123,12 @@ public final class Pipeline {
   long silverMs=(System.nanoTime()-started)/1_000_000;
   try {
    // A batch replayed after its manifest (a crash before Spark recorded it as done) publishes nothing again.
-   if(Snapshots.committed(s,DATA,id,lineage)){System.out.println("ALREADY COMMITTED snapshot="+id+"; replay publishes nothing");return;}
+   if(Snapshots.committed(s,DATA,id,lineage)) {
+    System.out.println("ALREADY COMMITTED snapshot="+id+"; replay publishes nothing");
+    // A crash after the manifest and before the relay finished leaves items pending; they are sent now.
+    if(!full)Outbox.drainQuietly(s,DATA,relay);
+    return;
+   }
    Snapshots.discardUncommitted(s,DATA,id);
    Row previous=Snapshots.latest(s,DATA);
    boolean allow=Boolean.parseBoolean(s.conf().get(Specifications.ALLOW_SYNTHETIC,"false"));
@@ -129,7 +136,8 @@ public final class Pipeline {
    Dataset<Row> before=previous==null||Snapshots.recorded(previous,"silver/events_current")==null?null
     :s.read().format("delta").option("versionAsOf",Snapshots.recorded(previous,"silver/events_current")).load(DATA+"/silver/events_current");
    Dataset<Row> changes=before==null?null:Impact.changes(before,current).localCheckpoint();
-   Dataset<Row> live=previous==null?null:Snapshots.state(s,DATA,previous).select(col("productId").as("productId")).localCheckpoint();
+   Dataset<Row> prior=previous==null?null:Snapshots.state(s,DATA,previous).localCheckpoint();
+   Dataset<Row> live=prior==null?null:prior.select(col("productId").as("productId"));
    Dataset<Row> affected,assessed,intervals,segments;long impactMs=0,exposureStarted;
    if(reason==null) {
     long impactStarted=System.nanoTime();
@@ -174,6 +182,12 @@ public final class Pipeline {
    gold.accept(changes==null?null:changes.selectExpr("eventId","kind","change","oldRevision","newRevision").withColumn("snapshotId",lit(id)),Snapshots.IMPACTS);
    gold.accept(assessed==null?removed:removed==null?assessed:assessed.unionByName(removed,true),Snapshots.HISTORY);
    inject("history",id);
+   // Review items of the recomputed and removed units, against their assessments in the previous state.
+   Dataset<Row> items=Outbox.items(s,prior==null?null:prior.join(affected,"productId","left_semi"),assessed,id,lineage);
+   items=items==null?null:items.localCheckpoint();
+   long reviewItems=items==null?0:items.count();
+   gold.accept(items,Outbox.OUTBOX);
+   inject("outbox",id);
    // Digests cover the whole state the snapshot publishes, not only the rows it wrote.
    Dataset<Row> state=Snapshots.exists(s,DATA,Snapshots.HISTORY)?Snapshots.resolve(Snapshots.table(s,DATA,Snapshots.HISTORY),
     (Snapshots.exists(s,DATA,Snapshots.COMMITS)?Snapshots.table(s,DATA,Snapshots.COMMITS).select("snapshotId"):s.range(0).selectExpr("id snapshotId"))
@@ -190,15 +204,22 @@ public final class Pipeline {
    merge(s,Snapshots.manifest(id,lineage,RUN_ID,CODE_VERSION,allow,mode,reason,changed,recomputed,source,current,digests,versions),
     DATA+"/gold/commits","t.snapshotId=s.snapshotId");
    System.out.println("COMMITTED snapshot="+id+" mode="+mode+(reason==null?"":" ("+reason+")")+" changed="+changed+" recomputed="+recomputed
-    +" products="+(state==null?0:state.count())+" canonicalMs="+canonicalMs+" silverMs="+(silverMs-canonicalMs)+" impactMs="+impactMs+" exposureMs="+exposureMs
+    +" products="+(state==null?0:state.count())+" reviewItems="+reviewItems+" canonicalMs="+canonicalMs+" silverMs="+(silverMs-canonicalMs)+" impactMs="+impactMs+" exposureMs="+exposureMs
     +" publishMs="+((System.nanoTime()-started)/1_000_000-silverMs-impactMs-exposureMs));
+   // Replay rebuilds into its own namespace and must not notify anyone; live snapshots relay their items once committed.
+   if(!full)Outbox.drainQuietly(s,DATA,relay);
   } finally {
    edges.unpersist();anomalies.unpersist();units.unpersist();timeline.unpersist();history.unpersist();parsed.unpersist();
   }
  }
  public static void main(String[] args)throws Exception {
   SparkSession s=session("Cold-chain medallion pipeline");
-  s.readStream().format("kafka").option("kafka.bootstrap.servers",System.getenv().getOrDefault("KAFKA_BOOTSTRAP","kafka:9092"))
+  String bootstrap=System.getenv().getOrDefault("KAFKA_BOOTSTRAP","kafka:9092");
+  relay=Outbox.kafka(bootstrap,Outbox.TOPIC);
+  // Items left pending by a crash or an unavailable broker are sent even when no new input arrives.
+  java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"review-relay");t.setDaemon(true);return t;})
+   .scheduleWithFixedDelay(()->Outbox.drainQuietly(s,DATA,relay),0,10,java.util.concurrent.TimeUnit.SECONDS);
+  s.readStream().format("kafka").option("kafka.bootstrap.servers",bootstrap)
    .option("subscribe","coldchain.sensors,coldchain.traceability,coldchain.inventory,coldchain.specifications")
    .option("startingOffsets","earliest").option("includeHeaders",true).option("failOnDataLoss",true).option("maxOffsetsPerTrigger",5000).load()
    .writeStream().option("checkpointLocation",DATA+"/checkpoints/medallion")

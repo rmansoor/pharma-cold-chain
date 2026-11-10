@@ -16,7 +16,7 @@ Java 17 + Kafka 3.9.1 + Spark 3.5.7 + Delta Lake 3.3.3. A local reference implem
 ```sh
 mvn -s maven-settings.xml -B test
 export ALLOW_SYNTHETIC_SPECS=true   # the demo's thresholds are synthetic; without this the pipeline ignores them
-docker compose up -d --build pipeline
+docker compose up -d --build pipeline cases
 docker compose --profile demo run --rm simulator
 docker compose --profile demo run --rm verify
 scripts/restart-check.sh
@@ -24,6 +24,6 @@ scripts/restart-check.sh
 
 Needs about 4 GB of Docker memory. Versions, measured resources and the restart check are in [Decisions and operations](docs/decisions-and-operations.md#local-operating-runbook). CI runs the tests, a secret scan, and the Compose demo and restart check.
 
-Host Kafka: localhost:29092. Spark UI: localhost:4041. New project volumes are separate from the earlier fraud project. Each batch still rebuilds Silver from all retained Bronze, but recomputes Gold only for the units its changes can affect; `io.coldchain.Replay` recomputes everything into an isolated namespace as the reference. Synthetic thresholds are not product-handling guidance. No clinical decisions, automatic recalls or compliance certification are implemented.
+Host Kafka: localhost:29092. Spark UI: localhost:4041. New project volumes are separate from the earlier fraud project. Each batch still rebuilds Silver from all retained Bronze, but recomputes Gold only for the units its changes can affect; `io.coldchain.Replay` recomputes everything into an isolated namespace as the reference. Each snapshot's new, revised and withdrawn review items are relayed to Kafka and kept, once each, in the `cases` service's case store. Synthetic thresholds are not product-handling guidance. No clinical decisions, automatic recalls or compliance certification are implemented.
 
-42 local Spark transformation and contract tests pass (`mvn -s maven-settings.xml -B test`). CI also runs the Compose demo, restart and crash checks. Jira: epic SID-12, stories SID-13..SID-28 (see docs/jira-backlog.json).
+45 local Spark transformation and contract tests pass (`mvn -s maven-settings.xml -B test`). CI also runs the Compose demo, restart and crash checks. Jira: epic SID-12, stories SID-13..SID-29 (see docs/jira-backlog.json).

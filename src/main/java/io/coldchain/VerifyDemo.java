@@ -88,11 +88,24 @@ public final class VerifyDemo {
      impact=shipped.rows().size()==1&&"UNIT-B".equals(shipped.rows().get(0).getAs("productId"))&&"QUALITY_REVIEW".equals(shipped.rows().get(0).getAs("assessment"))
       &&own.rows().size()==1&&denied&&second!=null&&second.snapshotId()==first.snapshotId()&&first.rows().size()+second.rows().size()==3&&second.next()==null;
     } catch(IllegalArgumentException e){impact=false;}
+    // Review items reached the reviewers' case store once each: every committed item was delivered, no delivery was recorded
+    // twice, each case holds its unit's newest item, UNIT-B's case is open for review, and UNIT-A's first item was revised.
+    boolean alerts=false;
+    if(Snapshots.exists(s,base,Outbox.OUTBOX)&&Snapshots.exists(s,CaseStore.DIR,CaseStore.CASES)) {
+     Dataset<Row> items=Snapshots.table(s,base,Outbox.OUTBOX).join(Snapshots.table(s,base,"gold/commits").select("snapshotId"),"snapshotId","left_semi");
+     Dataset<Row> told=Snapshots.table(s,CaseStore.DIR,CaseStore.NOTIFICATIONS),cases=Snapshots.table(s,CaseStore.DIR,CaseStore.CASES);
+     Dataset<Row> newest=items.groupBy("reviewItemId").agg(max("snapshotId").alias("snapshotId"));
+     alerts=items.select("deliveryId").except(told.select("deliveryId")).isEmpty()&&told.count()==told.select("deliveryId").distinct().count()
+      &&newest.join(cases,new String[]{"reviewItemId","snapshotId"},"left_anti").isEmpty()&&cases.count()==newest.count()
+      &&cases.filter("reviewItemId='UNIT-B' AND status='OPEN' AND assessment='QUALITY_REVIEW' AND size(sourceRevisions) > 0").count()==1
+      &&told.filter("productId='UNIT-A'").orderBy("snapshotId").selectExpr("concat(change,':',assessment) c").as(Encoders.STRING()).collectAsList()
+       .equals(List.of("NEW:QUALITY_REVIEW","REVISED:INSUFFICIENT_DATA"));
+    }
     // Name the checks that fail, whenever that set changes, so a timeout says what never became true.
     Map<String,Boolean> checks=new LinkedHashMap<>();
     checks.put("before",before);checks.put("a",a);checks.put("b",b);checks.put("nested",nested);checks.put("dlq",dlq);checks.put("resolved",resolved);
     checks.put("invalidated",invalidated);checks.put("custody",custody);checks.put("quality",quality);checks.put("traced",traced);
-    checks.put("policy",policy);checks.put("published",published);checks.put("impact",impact);
+    checks.put("policy",policy);checks.put("published",published);checks.put("impact",impact);checks.put("alerts",alerts);
     String now_failing="snapshot "+latest+": "+String.join(",",checks.entrySet().stream().filter(e->!e.getValue()).map(Map.Entry::getKey).toList());
     if(!now_failing.equals(failing))System.out.println("waiting on "+now_failing);
     failing=now_failing;
@@ -101,7 +114,7 @@ public final class VerifyDemo {
      System.out.println("Pinned snapshot "+latest+" ("+commit.getAs("recomputeMode")+", "+commit.getAs("recomputedProducts")+" units recomputed for "
       +commit.getAs("changedEvents")+" changed events): lineage "+commit.getAs("lineageId")+", run "+commit.getAs("runId")+", code "+commit.getAs("codeVersion")
       +", evidence "+commit.getAs("evidenceRevisions")+" revisions, tables "+commit.getList(commit.fieldIndex("tableVersions")));
-     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; synthetic thresholds flagged and calibrated reading used; exposure intervals traced to exact revisions; outcomes name a policy that releases nothing, with data-quality flags beside them; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision; the reviewed unit traced to its recipient within scope; manifest identifies lineage, run, high-watermarks, table versions and evidence.");s.stop();return;
+     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; synthetic thresholds flagged and calibrated reading used; exposure intervals traced to exact revisions; outcomes name a policy that releases nothing, with data-quality flags beside them; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision; the reviewed unit traced to its recipient within scope; review items delivered to the case store once each, newest revision held; manifest identifies lineage, run, high-watermarks, table versions and evidence.");s.stop();return;
     }
    }
    Thread.sleep(3000);

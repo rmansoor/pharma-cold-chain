@@ -20,7 +20,15 @@ public final class Inspect {
    +" caseLog="+(Snapshots.exists(s,base,"silver/case_log")?s.read().format("delta").load(base+"/silver/case_log").count():0)
    // visible: rows a reader of the pinned snapshot sees; uncommitted: history rows of snapshots without a manifest.
    +" visible="+(gold?Snapshots.assessments(s,base,Snapshots.latest(s,base)).count():0)
-   +" uncommitted="+(Snapshots.exists(s,base,"gold/assessment_history")?Snapshots.uncommitted(s,base,Snapshots.HISTORY).count():0));
+   +" uncommitted="+(Snapshots.exists(s,base,"gold/assessment_history")?Snapshots.uncommitted(s,base,Snapshots.HISTORY).count():0)
+   // outbox: committed review items; relayed: items the relay recorded as sent; pending: committed snapshots not yet relayed.
+   +" outbox="+(gold&&Snapshots.exists(s,base,Outbox.OUTBOX)?Snapshots.table(s,base,Outbox.OUTBOX).join(Snapshots.table(s,base,Snapshots.COMMITS).select("snapshotId"),"snapshotId","left_semi").count():0)
+   +" relayed="+(Snapshots.exists(s,base,Outbox.RELAYED)?Snapshots.table(s,base,Outbox.RELAYED).agg(coalesce(sum("items"),lit(0L))).first().getLong(0):0)
+   +" pending="+Outbox.pending(s,base).size()
+   // The case store (CASES_DIR): notifications received, distinct deliveries among them, and open cases.
+   +" notifications="+(Snapshots.exists(s,CaseStore.DIR,CaseStore.NOTIFICATIONS)?Snapshots.table(s,CaseStore.DIR,CaseStore.NOTIFICATIONS).count():0)
+   +" deliveries="+(Snapshots.exists(s,CaseStore.DIR,CaseStore.NOTIFICATIONS)?Snapshots.table(s,CaseStore.DIR,CaseStore.NOTIFICATIONS).select("deliveryId").distinct().count():0)
+   +" openCases="+(Snapshots.exists(s,CaseStore.DIR,CaseStore.CASES)?Snapshots.table(s,CaseStore.DIR,CaseStore.CASES).filter("status = 'OPEN'").count():0));
   s.stop();
  }
 }

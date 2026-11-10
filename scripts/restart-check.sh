@@ -13,7 +13,7 @@ before=$(state); echo "before:  $before"
 [[ $before == "STATE empty" ]] && { echo "FAIL: no committed snapshot yet; run the demo first"; exit 1; }
 
 dc down            # containers removed, named volumes kept
-dc up -d pipeline
+dc up -d pipeline cases
 sleep 30                      # well past several 5 s triggers
 idle=$(state); echo "restart: $idle"
 [[ $idle == "$before" ]] || { echo "FAIL: restart without new input changed persisted state"; exit 1; }
