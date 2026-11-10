@@ -49,7 +49,7 @@ services:
   verify:
     build: .
     profiles: [demo]
-    environment: {DATA_DIR: /data}
+    environment: {DATA_DIR: /data, VERIFY_TIMEOUT_SECONDS: '${VERIFY_TIMEOUT_SECONDS:-600}'}
     volumes: ["pipeline-data:/data"]
     command: [io.coldchain.VerifyDemo]
 volumes:

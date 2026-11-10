@@ -21,7 +21,8 @@ jobs:
     name: Fresh Compose deployment, demo, restart and crash
     needs: test
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # Each batch can take minutes on a shared runner; the demo, replay, restart and two crash phases run several.
+    timeout-minutes: 45
     # The demo's thresholds are synthetic; only the demo deployment may use them.
     # CODE_VERSION is recorded in every Gold manifest.
     env: {ALLOW_SYNTHETIC_SPECS: 'true', CODE_VERSION: '${{ github.sha }}'}
