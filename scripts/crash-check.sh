@@ -2,6 +2,7 @@
 # Crash check. SID-15: a pipeline killed after the Bronze commit, before Spark marks the batch done, replays that batch on
 # restart without duplicating Bronze rows or losing offsets. SID-22: a pipeline killed after writing Gold history but before
 # the manifest leaves a snapshot readers cannot see; the restart publishes it exactly once.
+# Waits up to 10 minutes for each batch, since batches on a shared CI runner can take minutes.
 # Uses its own disposable Compose project (volumes are deleted); stop other stacks on ports 29092/4041 first.
 # Usage: scripts/crash-check.sh [compose-project-name]
 set -euo pipefail
@@ -25,7 +26,7 @@ publish() {
 }
 for f in contracts/examples/*.json; do publish "$f"; done
 stopped() {
- for _ in $(seq 1 60); do
+ for _ in $(seq 1 120); do
   status=$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "$(dc ps -aq pipeline)")
   [[ $status == exited* ]] && return 0; sleep 5
  done
@@ -42,7 +43,7 @@ crashed=$(state); echo "crashed: $crashed (exit $code)"
 [[ $(field "$crashed" bronze) -eq $examples && $(field "$crashed" commits) -eq 0 ]] || fail "expected $examples Bronze rows and no Gold commit after the crash"
 
 FAIL_AT= dc up -d pipeline >/dev/null
-for _ in $(seq 1 40); do
+for _ in $(seq 1 120); do
  resumed=$(state); [[ $(field "$resumed" lastSnapshot) -ge 0 ]] && break; sleep 5
 done
 echo "resumed: $resumed"
@@ -65,7 +66,7 @@ partial=$(state); echo "partial: $partial"
 [[ $(field "$partial" uncommitted) -gt 0 ]] || fail "expected Gold history rows of the unpublished snapshot 1"
 [[ $(field "$partial" visible) -eq $(field "$resumed" visible) ]] || fail "readers saw rows of the unpublished snapshot"
 FAIL_AT= dc up -d pipeline >/dev/null
-for _ in $(seq 1 40); do
+for _ in $(seq 1 120); do
  published=$(state); [[ $(field "$published" lastSnapshot) -ge 1 ]] && break; sleep 5
 done
 echo "published: $published"

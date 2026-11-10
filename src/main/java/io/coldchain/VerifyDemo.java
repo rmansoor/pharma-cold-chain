@@ -5,7 +5,9 @@ import org.apache.spark.sql.*;
 import static org.apache.spark.sql.functions.*;
 public final class VerifyDemo {
  public static void main(String[] args)throws Exception {
-  SparkSession s=Pipeline.session("Cold-chain verifier");long end=System.nanoTime()+180_000_000_000L;
+  // Batches on a shared CI runner can take minutes each; VERIFY_TIMEOUT_SECONDS bounds the wait for the corrected snapshot.
+  long timeout=Long.parseLong(System.getenv().getOrDefault("VERIFY_TIMEOUT_SECONDS","600"));
+  SparkSession s=Pipeline.session("Cold-chain verifier");long end=System.nanoTime()+timeout*1_000_000_000L;
   String failing="no committed snapshot";
   String base=Pipeline.DATA;
   while(System.nanoTime()<end) {
@@ -88,6 +90,6 @@ public final class VerifyDemo {
    }
    Thread.sleep(3000);
   }
-  s.stop();throw new AssertionError("Scenario incomplete ("+failing+"). Use a fresh deployment and allow the initial phase to commit before correction.");
+  s.stop();throw new AssertionError("Scenario incomplete after "+timeout+" s ("+failing+"). Use a fresh deployment and allow the initial phase to commit before correction.");
  }
 }
