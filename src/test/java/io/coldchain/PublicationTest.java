@@ -103,17 +103,17 @@ class PublicationTest {
   assertEquals(LINEAGE,commit.getAs("lineageId"));assertEquals(Pipeline.RUN_ID,commit.getAs("runId"));assertEquals("dev",commit.getAs("codeVersion"));
   assertEquals(Model.RULE_VERSION,commit.getAs("ruleVersion"));assertEquals(Policy.VERSION,commit.getAs("policyVersion"));
   assertEquals("2026-01-01T12:00:00Z",commit.<java.sql.Timestamp>getAs("dataAsOf").toInstant().toString());
-  // High-watermarks per topic partition after both batches: 13 initial events (offsets 0-12) and the correction (13).
+  // High-watermarks per topic partition after both batches: 14 initial events (offsets 0-13) and the correction (14).
   List<String> marks=new ArrayList<>();
   for(Row m:commit.<Row>getList(commit.fieldIndex("sourceHighWatermarks")))marks.add(m.getAs("topic")+"/"+m.getAs("partition")+"@"+m.getAs("maxOffset"));
-  assertEquals(List.of("coldchain.inventory/0@5","coldchain.sensors/0@12","coldchain.specifications/0@0","coldchain.traceability/0@13"),marks);
+  assertEquals(List.of("coldchain.inventory/0@5","coldchain.sensors/0@12","coldchain.specifications/0@0","coldchain.traceability/0@14"),marks);
   // Recorded versions are the versions written: reading at them gives exactly the published rows.
   for(String t:List.of("bronze/events","silver/events_current",Snapshots.SEGMENTS,Snapshots.HISTORY,Snapshots.INTERVALS,"gold/assessment_policies"))
    assertNotNull(Snapshots.recorded(commit,t),t);
   assertEquals(Pipeline.version(s,d+"/bronze/events"),(long)Snapshots.recorded(commit,"bronze/events"));
   Row earlier=s.read().format("delta").load(d+"/"+Snapshots.COMMITS).filter("snapshotId = 0").first();
   assertTrue(Snapshots.recorded(earlier,Snapshots.HISTORY)<Snapshots.recorded(commit,Snapshots.HISTORY));
-  assertEquals(14L,s.read().format("delta").option("versionAsOf",Snapshots.recorded(commit,"bronze/events")).load(d+"/bronze/events").count());
+  assertEquals(15L,s.read().format("delta").option("versionAsOf",Snapshots.recorded(commit,"bronze/events")).load(d+"/bronze/events").count());
   // The evidence digest is reproducible from the pinned assessments' source revisions.
   Dataset<Row> pinned=Snapshots.assessments(s,d,commit);
   assertEquals((long)commit.<Long>getAs("products"),pinned.count());

@@ -14,15 +14,16 @@ public final class Model {
   .add("location","string").add("status","string")
   .add("childId","string").add("childLevel","string").add("parentId","string").add("parentLevel","string")
   .add("custodianId","string").add("temperature","double").add("temperatureUnit","string").add("uncertaintyC","double")
-  .add("synthetic","boolean");
+  .add("synthetic","boolean").add("shipmentId","string").add("recipientId","string");
  private Model() {}
  static final String SKEW="kafkaTime + INTERVAL 5 MINUTES";
- static final String KINDS="kind IN ('READING','PLACEMENT','ASSIGNMENT','SPEC','INVENTORY','PACKING','CUSTODY','CALIBRATION')";
- static final String INTERVAL_KINDS="kind IN ('READING','PLACEMENT','ASSIGNMENT','SPEC','PACKING','CUSTODY','CALIBRATION')";
+ static final String KINDS="kind IN ('READING','PLACEMENT','ASSIGNMENT','SPEC','INVENTORY','PACKING','CUSTODY','CALIBRATION','SHIPMENT')";
+ static final String INTERVAL_KINDS="kind IN ('READING','PLACEMENT','ASSIGNMENT','SPEC','PACKING','CUSTODY','CALIBRATION','SHIPMENT')";
  static final String UNIT_PACKING="(kind = 'PACKING' AND childLevel = 'UNIT')";
+ static String SHIPS(String field){return "(kind = 'SHIPMENT' AND "+field+" IS NOT NULL)";}
  static String rank(String level){return "array_position(array('UNIT','CARTON','PALLET','CONTAINER'),"+level+")";}
  static final String TOPIC="CASE kind WHEN 'READING' THEN 'coldchain.sensors' WHEN 'CALIBRATION' THEN 'coldchain.sensors' WHEN 'PLACEMENT' THEN 'coldchain.traceability' "
-  +"WHEN 'ASSIGNMENT' THEN 'coldchain.traceability' WHEN 'PACKING' THEN 'coldchain.traceability' WHEN 'CUSTODY' THEN 'coldchain.traceability' WHEN 'SPEC' THEN 'coldchain.specifications' WHEN 'INVENTORY' THEN 'coldchain.inventory' END";
+  +"WHEN 'ASSIGNMENT' THEN 'coldchain.traceability' WHEN 'PACKING' THEN 'coldchain.traceability' WHEN 'CUSTODY' THEN 'coldchain.traceability' WHEN 'SHIPMENT' THEN 'coldchain.traceability' WHEN 'SPEC' THEN 'coldchain.specifications' WHEN 'INVENTORY' THEN 'coldchain.inventory' END";
  // A rule applies when its condition holds and yields its reason code when the check is false or unknown.
  static String rule(String code,String when,String ok){return "IF(coalesce("+when+",false) AND NOT coalesce("+ok+",false),'"+code+"',NULL)";}
  // Identifiers need a non-whitespace character; trim() alone would let tabs and newlines through.
@@ -38,10 +39,12 @@ public final class Model {
  static final List<String> RULES=List.of(id("eventId","true"),rule("INVALID_REVISION","true","revision >= 1"),
   rule("INVALID_KIND","true",KINDS),rule("WRONG_TOPIC",TOPIC+" IS NOT NULL","topic = "+TOPIC),
   rule("MISSING_EVENT_TIME","true","eventTime IS NOT NULL"),rule("EVENT_TIME_AHEAD_OF_KAFKA","true","eventTime IS NULL OR eventTime <= "+SKEW),
-  id("sensorId","kind IN ('READING','ASSIGNMENT','CALIBRATION')"),id("productId","kind IN ('PLACEMENT','INVENTORY')"),
+  id("sensorId","kind IN ('READING','ASSIGNMENT','CALIBRATION')"),id("productId","kind IN ('PLACEMENT','INVENTORY') OR "+SHIPS("productId")),
   id("productCode","kind IN ('PLACEMENT','SPEC') OR "+UNIT_PACKING),id("lotId","kind = 'PLACEMENT' OR "+UNIT_PACKING),
-  id("containerId","kind IN ('PLACEMENT','ASSIGNMENT','CUSTODY')"),id("location","kind = 'INVENTORY'"),
-  id("custodianId","kind = 'CUSTODY'"),id("childId","kind = 'PACKING'"),id("parentId","kind = 'PACKING'"),
+  id("containerId","kind IN ('PLACEMENT','ASSIGNMENT','CUSTODY') OR "+SHIPS("containerId")),id("location","kind = 'INVENTORY'"),
+  id("custodianId","kind = 'CUSTODY'"),id("shipmentId","kind = 'SHIPMENT'"),id("recipientId","kind = 'SHIPMENT'"),
+  // A shipment line ships either a container (every unit in it at dispatch) or a single unit, never both.
+  rule("INVALID_SHIPMENT_SUBJECT","kind = 'SHIPMENT'","(containerId IS NULL) <> (productId IS NULL)"),id("childId","kind = 'PACKING'"),id("parentId","kind = 'PACKING'"),
   rule("INVALID_LEVEL:childLevel","kind = 'PACKING'","childLevel IN ('UNIT','CARTON','PALLET')"),
   rule("INVALID_LEVEL:parentLevel","kind = 'PACKING'","parentLevel IN ('CARTON','PALLET','CONTAINER')"),
   rule("PARENT_NOT_ABOVE_CHILD","kind = 'PACKING' AND childLevel IN ('UNIT','CARTON','PALLET') AND parentLevel IN ('CARTON','PALLET','CONTAINER')",
@@ -120,6 +123,9 @@ public final class Model {
  // elementary measured segment (gold/exposure_segments), both with exact source revisions.
  // Version of the exposure calculation (intervals and durations); the outcome policy is versioned separately (Policy.VERSION).
  public static final String RULE_VERSION="exposure-v4";
+ // Version of the stored assessment row's columns. A snapshot whose rows have another layout cannot be extended
+ // incrementally (Snapshots.fullReason): v2 adds lotIds and productCodes.
+ public static final String ROW_VERSION="assessment-row-v2";
  public record Result(Dataset<Row> assessments,Dataset<Row> intervals,Dataset<Row> segments) {}
  // Assessments of every unit in events, as of the newest event among them. Persisted assessments are stored without the
  // dataAsOf-dependent fields, which Snapshots derives from the manifest when a snapshot is read.
@@ -315,7 +321,10 @@ public final class Model {
   spark.sql("""
    SELECT productId, min(startTime) scopeStart, max(endTime) scopeEnd FROM exposureIntervals WHERE metric='EXPECTED' GROUP BY productId
    """).createOrReplaceTempView("scopes");
-  fresh(spark,"metrics","evidence","inventory","custodians","calibrations","revisions","ambiguous","bySpecification","inventoryAge","scopes");
+  // Lot and product code from the unit's own memberships; more than one means the sources disagree about the unit.
+  spark.sql("SELECT childId productId, sort_array(collect_set(lotId)) lotIds, sort_array(collect_set(productCode)) productCodes FROM units GROUP BY childId")
+   .createOrReplaceTempView("identities");
+  fresh(spark,"metrics","evidence","inventory","custodians","calibrations","revisions","ambiguous","bySpecification","inventoryAge","scopes","identities");
   spark.sql("""
    SELECT m.*, coalesce(e.allowedExcursionSeconds,0L) allowedExcursionSeconds, e.allowedExcursionSeconds allowed,
     coalesce(e.outOfRangePoints,0L) outOfRangePoints, coalesce(e.syntheticThresholds,false) syntheticThresholds,
@@ -325,10 +334,10 @@ public final class Model {
     coalesce(a.ambiguousLineage,false) ambiguousLineage, coalesce(a.ambiguousAssignment,false) ambiguousAssignment,
     coalesce(a.ambiguousCustody,false) ambiguousCustody, coalesce(a.ambiguousSpecification,false) ambiguousSpecification,
     b.excursionBySpecification, g.inventoryRecordedAt, coalesce(g.movedSinceInventory,false) movedSinceInventory,
-    o.scopeStart, o.scopeEnd
+    o.scopeStart, o.scopeEnd, d.lotIds, d.productCodes
    FROM metrics m LEFT JOIN evidence e USING(productId) LEFT JOIN inventory i USING(productId) LEFT JOIN custodians c USING(productId)
     LEFT JOIN calibrations q USING(productId) LEFT JOIN revisions v USING(productId) LEFT JOIN ambiguous a USING(productId)
-    LEFT JOIN bySpecification b USING(productId) LEFT JOIN inventoryAge g USING(productId) LEFT JOIN scopes o USING(productId)
+    LEFT JOIN bySpecification b USING(productId) LEFT JOIN inventoryAge g USING(productId) LEFT JOIN scopes o USING(productId) LEFT JOIN identities d USING(productId)
    """).createOrReplaceTempView("assessed");
   // Reasons, flags and the outcome come from the policy (Policy.java, docs/detailed-design.md section 5).
   Dataset<Row> gold=spark.sql(Policy.apply("assessed")).withColumn("ruleVersion",lit(RULE_VERSION))
@@ -338,7 +347,7 @@ public final class Model {
     col("missingCustodySeconds"),col("custodianIds"),col("possibleExcursionSeconds"),col("uncalibratedSeconds"),
     col("unspecifiedSeconds"),col("outOfRangePoints"),col("calibrationIds"),col("maxUncertaintyC"),col("syntheticThresholds"),
     col("assessmentReasons"),col("sourceRevisions"),col("dataQualityFlags"),col("excursionBySpecification"),col("inventoryRecordedAt"),
-    col("movedSinceInventory"),col("scopeStart"),col("scopeEnd"),col("assessmentScope"),col("policyVersion"),col("ruleVersion"))),256));
+    col("movedSinceInventory"),col("scopeStart"),col("scopeEnd"),col("lotIds"),col("productCodes"),col("assessmentScope"),col("policyVersion"),col("ruleVersion"))),256));
   Dataset<Row> segments=spark.sql(Exposure.revisions("segments",
    "productId,startTime,endTime,lineageIds,assignmentId,sensorId,readingId,specificationId,temperatureC,minC,maxC,outOfRange","events"))
    .withColumn("seconds",expr("unix_timestamp(endTime)-unix_timestamp(startTime)"));

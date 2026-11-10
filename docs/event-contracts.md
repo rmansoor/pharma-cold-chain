@@ -7,7 +7,7 @@ Contract for every record value on the four cold-chain topics. Machine-readable 
 | Topic | Kinds | Owning source (role) | Kafka key |
 |---|---|---|---|
 | coldchain.sensors | READING, CALIBRATION | Sensor telemetry gateway (readings, and calibration certificates relayed from the metrology system) | eventId |
-| coldchain.traceability | PLACEMENT, PACKING, ASSIGNMENT, CUSTODY | Serialization / packing system (placements and packing), logistics operations (sensor-to-container assignments and custody) | eventId |
+| coldchain.traceability | PLACEMENT, PACKING, ASSIGNMENT, CUSTODY, SHIPMENT | Serialization / packing system (placements and packing), logistics operations (sensor-to-container assignments, custody and shipments) | eventId |
 | coldchain.specifications | SPEC | Quality assurance (approved storage conditions) | eventId |
 | coldchain.inventory | INVENTORY | Warehouse management system | eventId |
 
@@ -21,7 +21,7 @@ The owners are roles until named systems and contacts are agreed with each organ
 |---|---|---|
 | eventId | string | Required and must contain a non-whitespace character. Globally unique across all kinds, and keeps the same kind across revisions. |
 | revision | integer | Required, ≥ 1. |
-| kind | enum | READING, CALIBRATION, PLACEMENT, PACKING, ASSIGNMENT, CUSTODY, SPEC or INVENTORY. |
+| kind | enum | READING, CALIBRATION, PLACEMENT, PACKING, ASSIGNMENT, CUSTODY, SHIPMENT, SPEC or INVENTORY. |
 | eventTime | RFC 3339 timestamp | Required. When the source recorded the fact; no more than 5 minutes after the Kafka record timestamp. |
 
 ## Kinds
@@ -35,9 +35,10 @@ The owners are roles until named systems and contacts are agreed with each organ
 | CUSTODY | containerId, custodianId, startTime, endTime | The custodian (an organization or site) is responsible for the container during the interval. |
 | SPEC | productCode, startTime, endTime, minC, maxC, maxExcursionSeconds; optional synthetic | Acceptable range [minC, maxC] in °C, inclusive, finite, −100 to 100, with minC ≤ maxC. maxExcursionSeconds (integer ≥ 0) is the cumulative time out of range allowed before quality review. The interval is when the specification is effective; eventTime is when it was approved. synthetic (boolean) marks illustrative thresholds. |
 | INVENTORY | productId, location, status | status is IN_STOCK or DISPATCHED. |
+| SHIPMENT | shipmentId, recipientId, startTime, endTime, and exactly one of containerId or productId | One line of a shipment: dispatched at startTime, delivered at endTime. A container line ships every unit resolved into that container at the dispatch instant (through cartons and pallets); a productId line ships that unit. Several lines can share a shipmentId. recipientId is the receiving organization or site (a pharmacy, hospital or depot), never a patient: no field identifies a patient, and none is needed. |
 | PACKING | childId, childLevel, parentId, parentLevel, startTime, endTime; also productCode and lotId when childLevel is UNIT | childId is inside parentId during the interval. childLevel is UNIT, CARTON or PALLET; parentLevel is CARTON, PALLET or CONTAINER and must be above childLevel (UNIT < CARTON < PALLET < CONTAINER). A UNIT childId is the serialized unit's productId. childId and parentId differ. |
 
-Every identifier field (productId, productCode, lotId, containerId, sensorId, location, childId, parentId, custodianId) must contain a non-whitespace character.
+Every identifier field (productId, productCode, lotId, containerId, sensorId, location, childId, parentId, custodianId, shipmentId, recipientId) must contain a non-whitespace character.
 
 ### Specifications and measurement quality
 
@@ -108,12 +109,12 @@ Records that are not valid JSON, or that break any rule above, stay in Bronze as
 | MALFORMED_JSON | all | Not a strict JSON object (RFC 8259). Single quotes, `NaN` and `Infinity` are rejected even though Spark's reader accepts them. When this code is present, no other code is reported. |
 | INVALID_ID:eventId | all | Missing, or no non-whitespace character. |
 | INVALID_REVISION | all | Missing, not an integer, or below 1. |
-| INVALID_KIND | all | Missing or not one of the eight kinds. |
+| INVALID_KIND | all | Missing or not one of the nine kinds. |
 | WRONG_TOPIC | known kinds | The kind arrived on a topic that does not own it. |
 | MISSING_EVENT_TIME | all | eventTime is missing or not an RFC 3339 timestamp. |
 | EVENT_TIME_AHEAD_OF_KAFKA | all | eventTime is more than 5 minutes after the Kafka record timestamp. |
 | INVALID_ID:&lt;field&gt; | per kind | A required identifier (sensorId, productId, productCode, lotId, containerId, location) is missing or blank. |
-| INVALID_INTERVAL | READING, CALIBRATION, PLACEMENT, PACKING, ASSIGNMENT, CUSTODY, SPEC | A bound is missing, or startTime is not before endTime. A READING may have startTime = endTime (a point). |
+| INVALID_INTERVAL | READING, CALIBRATION, PLACEMENT, PACKING, ASSIGNMENT, CUSTODY, SHIPMENT, SPEC | A bound is missing, or startTime is not before endTime. A READING may have startTime = endTime (a point). |
 | FRACTIONAL_SECONDS | same kinds | A bound is not a whole second. |
 | READING_ENDS_AHEAD_OF_KAFKA | READING | endTime is more than 5 minutes after the Kafka record timestamp. |
 | AMBIGUOUS_TEMPERATURE | READING | temperatureC is given together with temperature or temperatureUnit. |
@@ -129,6 +130,8 @@ Records that are not valid JSON, or that break any rule above, stay in Bronze as
 | INVALID_LEVEL:childLevel, :parentLevel | PACKING | Missing or not an allowed level for that end. |
 | PARENT_NOT_ABOVE_CHILD | PACKING | parentLevel is not above childLevel, for example a pallet in a carton. |
 | SELF_CONTAINED | PACKING | childId equals parentId. |
+| INVALID_ID:shipmentId, :recipientId | SHIPMENT | Missing or blank. A containerId or productId that is given must not be blank either. |
+| INVALID_SHIPMENT_SUBJECT | SHIPMENT | Both containerId and productId are given, or neither. |
 
 Codes are reported independently, so a record with a zero revision and a blank sensorId gets both. Rules for a kind are checked only when the kind is known.
 
@@ -176,3 +179,5 @@ Adding an optional field or a new enum value is a minor change: update the schem
 - A lineage anomaly excludes every membership involved for its whole interval, not only the overlapping window. There is no steward resolution for anomalies yet; the source has to send corrected revisions.
 - An unknown field is ignored without a warning, so a misspelled optional field is silently lost.
 - The 5-minute skew is a fixed constant and not configurable per source.
+- A shipment line has no received quantity or receipt confirmation: delivery is the source's endTime. A container shipped while one of its units is in an ambiguous chain does not list that unit, because only resolved lineage is used.
+- Fields outside the contract are ignored but kept in Bronze `raw`. A source that sent patient data in an extra field would have it stored there; the contract cannot prevent that, and Bronze access must be restricted (CC-15).

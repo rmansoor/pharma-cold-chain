@@ -47,6 +47,7 @@ flowchart TD
   H --> R
   IV --> R
   R --> VERIFY[Java scenario verifier]
+  R --> Q[Scoped investigation queries: product, lot, shipment, location, recipient]
   ING -. offsets and progress .-> CK[(Spark checkpoint)]
 ```
 

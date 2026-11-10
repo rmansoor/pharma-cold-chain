@@ -72,11 +72,27 @@ public final class VerifyDemo {
      && Snapshots.recorded(commit,"bronze/events")!=null && Snapshots.recorded(commit,"gold/assessment_history")!=null
      // The correction was applied incrementally, not by recomputing everything.
      && "INCREMENTAL".equals(commit.getAs("recomputeMode"));
+    // Investigation: the reviewed unit went to HOSPITAL-DEMO in SHP-DEMO. The hospital sees only its own unit and may not ask
+    // about another recipient; paging the lot two units at a time stays on one snapshot.
+    boolean impact;
+    try {
+     ImpactQueries.Filter toHospital=new ImpactQueries.Filter(null,null,null,null,"HOSPITAL-DEMO",null);
+     ImpactQueries.Page shipped=ImpactQueries.query(s,base,ImpactQueries.Scope.investigator("verifier"),toHospital,10,null);
+     ImpactQueries.Page own=ImpactQueries.query(s,base,ImpactQueries.Scope.recipient("hospital","HOSPITAL-DEMO"),ImpactQueries.Filter.none(),10,null);
+     ImpactQueries.Filter lot=new ImpactQueries.Filter(null,"LOT-1",null,null,null,null);
+     ImpactQueries.Page first=ImpactQueries.query(s,base,ImpactQueries.Scope.investigator("verifier"),lot,2,null);
+     ImpactQueries.Page second=first.next()==null?null:ImpactQueries.query(s,base,ImpactQueries.Scope.investigator("verifier"),lot,2,first.next());
+     boolean denied=false;
+     try{ImpactQueries.query(s,base,ImpactQueries.Scope.recipient("hospital","HOSPITAL-DEMO"),new ImpactQueries.Filter(null,null,null,null,"HOSPITAL-2",null),10,null);}
+     catch(ImpactQueries.AccessDenied e){denied=true;}
+     impact=shipped.rows().size()==1&&"UNIT-B".equals(shipped.rows().get(0).getAs("productId"))&&"QUALITY_REVIEW".equals(shipped.rows().get(0).getAs("assessment"))
+      &&own.rows().size()==1&&denied&&second!=null&&second.snapshotId()==first.snapshotId()&&first.rows().size()+second.rows().size()==3&&second.next()==null;
+    } catch(IllegalArgumentException e){impact=false;}
     // Name the checks that fail, whenever that set changes, so a timeout says what never became true.
     Map<String,Boolean> checks=new LinkedHashMap<>();
     checks.put("before",before);checks.put("a",a);checks.put("b",b);checks.put("nested",nested);checks.put("dlq",dlq);checks.put("resolved",resolved);
     checks.put("invalidated",invalidated);checks.put("custody",custody);checks.put("quality",quality);checks.put("traced",traced);
-    checks.put("policy",policy);checks.put("published",published);
+    checks.put("policy",policy);checks.put("published",published);checks.put("impact",impact);
     String now_failing="snapshot "+latest+": "+String.join(",",checks.entrySet().stream().filter(e->!e.getValue()).map(Map.Entry::getKey).toList());
     if(!now_failing.equals(failing))System.out.println("waiting on "+now_failing);
     failing=now_failing;
@@ -85,7 +101,7 @@ public final class VerifyDemo {
      System.out.println("Pinned snapshot "+latest+" ("+commit.getAs("recomputeMode")+", "+commit.getAs("recomputedProducts")+" units recomputed for "
       +commit.getAs("changedEvents")+" changed events): lineage "+commit.getAs("lineageId")+", run "+commit.getAs("runId")+", code "+commit.getAs("codeVersion")
       +", evidence "+commit.getAs("evidenceRevisions")+" revisions, tables "+commit.getList(commit.fieldIndex("tableVersions")));
-     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; synthetic thresholds flagged and calibrated reading used; exposure intervals traced to exact revisions; outcomes name a policy that releases nothing, with data-quality flags beside them; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision; manifest identifies lineage, run, high-watermarks, table versions and evidence.");s.stop();return;
+     System.out.println("PASS: revised assignment moved exposure A -> B; prior assessment retained; nested packaging followed; correction invalidated former and revised units; custody handover without gap; synthetic thresholds flagged and calibrated reading used; exposure intervals traced to exact revisions; outcomes name a policy that releases nothing, with data-quality flags beside them; duplicate did not inflate duration; malformed input quarantined with a reason code; conflict case opened and resolved by a higher revision; the reviewed unit traced to its recipient within scope; manifest identifies lineage, run, high-watermarks, table versions and evidence.");s.stop();return;
     }
    }
    Thread.sleep(3000);

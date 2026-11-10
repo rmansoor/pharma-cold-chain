@@ -112,6 +112,7 @@ public final class Pipeline {
   silver.accept(timeline,"silver/timeline_anomalies");
   silver.accept(history,"silver/timelines");
   silver.accept(Timelines.invalidations(history,units),"silver/mapping_invalidations");
+  silver.accept(Shipments.lines(current,units),"silver/shipments");
   silver.accept(Specifications.effective(current),"silver/specifications");
   silver.accept(Specifications.overlaps(current),"silver/specification_overlaps");
   silver.accept(Measurements.readings(current),"silver/readings");
