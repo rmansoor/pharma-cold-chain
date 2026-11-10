@@ -81,6 +81,22 @@ class PublicationTest {
   assertTrue(refused.getMessage().contains("lineage-1"),refused.getMessage());
   assertEquals(1L,(long)latest(d).getAs("snapshotId"));assertEquals(0L,Snapshots.uncommitted(s,d,Snapshots.HISTORY).count());
  }
+ @Test void readersSeeATableWrittenByAnotherProcess()throws Exception {
+  // A reader polled while another process wrote the first commit of gold/commits. The commit is copied into place here, as a
+  // write from outside this JVM; DeltaTable.isDeltaTable keeps its cached answer, Snapshots.exists does not.
+  String root=lake("foreign"),source=root+"/source",target=root+"/gold/commits";
+  s.range(1).selectExpr("id snapshotId").write().format("delta").save(source);
+  Files.createDirectories(Path.of(target,"_delta_log"));
+  assertFalse(Snapshots.exists(s,root,Snapshots.COMMITS));assertFalse(DeltaTable.isDeltaTable(s,target));
+  try(var files=Files.walk(Path.of(source))) {
+   for(Path f:(Iterable<Path>)files::iterator) {
+    Path t=Path.of(target).resolve(Path.of(source).relativize(f));
+    if(Files.isDirectory(f))Files.createDirectories(t);else Files.copy(f,t);
+   }
+  }
+  assertFalse(DeltaTable.isDeltaTable(s,target),"the cached answer this guards against");
+  assertTrue(Snapshots.exists(s,root,Snapshots.COMMITS));assertEquals(0L,(long)latest(root).getAs("snapshotId"));
+ }
  @Test void manifestRecordsIdentityVersionsWatermarksAndEvidence()throws Exception {
   String d=clean();
   Row commit=latest(d);

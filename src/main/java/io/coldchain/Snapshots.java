@@ -10,7 +10,18 @@ import static org.apache.spark.sql.functions.*;
 public final class Snapshots {
  private Snapshots() {}
  static final String COMMITS="gold/commits",HISTORY="gold/assessment_history",INTERVALS="gold/exposure_intervals";
- static boolean exists(SparkSession s,String base,String table){return DeltaTable.isDeltaTable(s,base+"/"+table);}
+ // A table exists once its log holds a commit. DeltaTable.isDeltaTable is not used for this: polled by a reader while another
+ // process writes the table's first commit, it caches "no table" and keeps returning false until something reads the table.
+ public static boolean exists(SparkSession s,String base,String table) {
+  try {
+   org.apache.hadoop.fs.Path log=new org.apache.hadoop.fs.Path(base+"/"+table+"/_delta_log");
+   org.apache.hadoop.fs.FileSystem fs=log.getFileSystem(s.sparkContext().hadoopConfiguration());
+   if(!fs.exists(log))return false;
+   for(org.apache.hadoop.fs.FileStatus f:fs.listStatus(log))
+    if(f.getPath().getName().matches("\\d{20}\\.json|_last_checkpoint"))return true;
+   return false;
+  } catch(java.io.IOException e){throw new java.io.UncheckedIOException(e);}
+ }
  static Dataset<Row> table(SparkSession s,String base,String table){return s.read().format("delta").load(base+"/"+table);}
  // The newest committed snapshot, or null before the first commit.
  public static Row latest(SparkSession s,String base) {

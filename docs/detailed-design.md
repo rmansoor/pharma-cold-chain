@@ -149,6 +149,7 @@ A snapshot without a manifest row does not exist for readers.
 - `Snapshots.assessments` and `Snapshots.intervals` read each Gold table filtered to that snapshotId, at the Delta version the manifest recorded. Rows written later can't appear in that read, even by mistake.
 - `Snapshots.committedHistory` lists every committed snapshot's assessments.
 - A reader must never select the newest row per product on its own.
+- `Snapshots.exists` decides whether a table exists by listing its Delta log for a commit. `DeltaTable.isDeltaTable` is not safe for a reader in another process: polled while the writer creates a table's first commit, it caches "no table" and keeps answering false.
 
 **Retries.** Batch IDs come from the Spark checkpoint and become snapshot IDs.
 - **Before Gold:** a batch that stopped before its manifest left rows that carry its snapshotId but no commit. The retry deletes those rows and writes the snapshot again. Only the retry's rows remain, even if the code or input changed between attempts.

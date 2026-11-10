@@ -9,7 +9,7 @@ public final class VerifyDemo {
   String failing="no committed snapshot";
   String base=Pipeline.DATA;
   while(System.nanoTime()<end) {
-   if(DeltaTable.isDeltaTable(s,base+"/gold/commits")) {
+   if(Snapshots.exists(s,base,"gold/commits")) {
     // Pin one committed snapshot and read everything at it; uncommitted rows are never read.
     Row commit=Snapshots.latest(s,base);
     if(commit==null){Thread.sleep(3000);continue;}
@@ -23,14 +23,14 @@ public final class VerifyDemo {
     // matched segments, so the three lineage events appear on the reviewed assessment, not on the uncovered one.
     boolean nested=all.filter("productId='UNIT-D' AND assessment='QUALITY_REVIEW' AND size(lineageIds)=3").count()>0
      && now.filter("productId='UNIT-D' AND assessment='INSUFFICIENT_DATA' AND coveredSeconds=0").count()==1;
-    boolean dlq=DeltaTable.isDeltaTable(s,base+"/silver/quarantine") && s.read().format("delta").load(base+"/silver/quarantine")
+    boolean dlq=Snapshots.exists(s,base,"silver/quarantine") && s.read().format("delta").load(base+"/silver/quarantine")
      .filter("raw='{broken' AND reasons=array('MALFORMED_JSON') AND status='OPEN'").count()>0;
     // The inventory-C conflict was opened by the initial phase and resolved by a later snapshot.
-    boolean resolved=DeltaTable.isDeltaTable(s,base+"/silver/case_log") && s.read().format("delta").load(base+"/silver/case_log")
+    boolean resolved=Snapshots.exists(s,base,"silver/case_log") && s.read().format("delta").load(base+"/silver/case_log")
      .filter("eventId='inventory-C' AND caseType='PAYLOAD_MISMATCH'").groupBy().pivot("status",java.util.List.of("OPEN","RESOLVED")).agg(min("snapshotId"))
      .filter("OPEN < RESOLVED").count()==1;
     // The assignment correction lists the units it took exposure from (BOX-A) and gave it to (BOX-B).
-    boolean invalidated=DeltaTable.isDeltaTable(s,base+"/silver/mapping_invalidations") && s.read().format("delta").load(base+"/silver/mapping_invalidations")
+    boolean invalidated=Snapshots.exists(s,base,"silver/mapping_invalidations") && s.read().format("delta").load(base+"/silver/mapping_invalidations")
      .filter("assignmentId='assign'").selectExpr("concat(side,':',productId) v").distinct().orderBy("v").as(Encoders.STRING()).collectAsList()
      .equals(java.util.List.of("FORMER:UNIT-A","FORMER:UNIT-D","REVISED:UNIT-B"));
     // A handover at 12:05 leaves no custody gap in BOX-A; BOX-B has none recorded.
@@ -39,12 +39,12 @@ public final class VerifyDemo {
     // The demo's thresholds are synthetic and flagged as such; SENSOR-1's calibration covers the hot reading.
     boolean quality=now.filter("productId='UNIT-B' AND syntheticThresholds AND calibrationIds=array('calibration-1') AND uncalibratedSeconds=0 "
      +"AND assessmentReasons[0]='EXCURSION_ABOVE_ALLOWANCE' AND ruleVersion='exposure-v4'").count()==1
-     && DeltaTable.isDeltaTable(s,base+"/silver/readings") && s.read().format("delta").load(base+"/silver/readings")
+     && Snapshots.exists(s,base,"silver/readings") && s.read().format("delta").load(base+"/silver/readings")
      .filter("eventId='reading-hot' AND calibration='CALIBRATED' AND uncertaintyC=0.5").count()==1
      && s.read().format("delta").load(base+"/silver/specifications").filter("specificationId='spec' AND synthetic").count()==1;
     // Interval evidence names the exact revision: UNIT-B's excursion now rests on assignment revision 2, and the earlier
     // snapshot's UNIT-A excursion, on revision 1, is still retrievable.
-    boolean traced=DeltaTable.isDeltaTable(s,base+"/gold/exposure_intervals");
+    boolean traced=Snapshots.exists(s,base,"gold/exposure_intervals");
     if(traced) {
      Dataset<Row> intervals=s.read().format("delta").load(base+"/gold/exposure_intervals").join(s.read().format("delta").load(base+"/gold/commits").select("snapshotId"),"snapshotId","left_semi");
      String assign="exists(sources,x -> x.kind='ASSIGNMENT' AND x.eventId='assign' AND x.revision=%d)";
@@ -53,7 +53,7 @@ public final class VerifyDemo {
       && intervals.filter("productId='UNIT-A' AND metric='EXCURSION' AND "+assign.formatted(1)).count()>0;
     }
     // Outcomes name a persisted policy that releases nothing, and flags are reported beside them whatever the outcome.
-    boolean policy=DeltaTable.isDeltaTable(s,base+"/gold/assessment_policies") && s.read().format("delta").load(base+"/gold/assessment_policies")
+    boolean policy=Snapshots.exists(s,base,"gold/assessment_policies") && s.read().format("delta").load(base+"/gold/assessment_policies")
      .filter("policyVersion='"+Policy.VERSION+"' AND size(states)=3 AND forall(states,x -> NOT x.impliesRelease)").count()==1
      && now.filter("policyVersion='"+Policy.VERSION+"'").count()==now.count()
      && now.filter("productId='UNIT-B' AND assessment='QUALITY_REVIEW' AND dataQualityFlags=array('MISSING_CUSTODY')").count()==1

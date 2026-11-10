@@ -7,20 +7,20 @@ import static org.apache.spark.sql.functions.*;
 public final class Inspect {
  public static void main(String[] args) {
   SparkSession s=Pipeline.session("Cold-chain inspect");s.sparkContext().setLogLevel("ERROR");String base=Pipeline.DATA;
-  if(!DeltaTable.isDeltaTable(s,base+"/bronze/events")){System.out.println("STATE empty");s.stop();return;}
+  if(!Snapshots.exists(s,base,"bronze/events")){System.out.println("STATE empty");s.stop();return;}
   Dataset<Row> bronze=s.read().format("delta").load(base+"/bronze/events");
   // Before the first Gold commit (for example after an injected crash) only Bronze exists.
-  boolean gold=DeltaTable.isDeltaTable(s,base+"/gold/commits");
+  boolean gold=Snapshots.exists(s,base,"gold/commits");
   Row c=gold?s.read().format("delta").load(base+"/gold/commits").agg(max("snapshotId"),count(lit(1))).first():null;
   System.out.println("STATE bronze="+bronze.count()+" bronzeKeys="+bronze.select("topic","partition","offset").distinct().count()
    +" declared="+(Arrays.asList(bronze.columns()).contains("sourceSystemDeclared")?bronze.filter("sourceSystemDeclared").count():0)
    +" history="+(gold?s.read().format("delta").load(base+"/gold/assessment_history").count():0)
    +" commits="+(gold?c.getLong(1):0)+" lastSnapshot="+(gold?c.getLong(0):-1)
    +" quarantine="+(gold?s.read().format("delta").load(base+"/silver/quarantine").count():0)
-   +" caseLog="+(DeltaTable.isDeltaTable(s,base+"/silver/case_log")?s.read().format("delta").load(base+"/silver/case_log").count():0)
+   +" caseLog="+(Snapshots.exists(s,base,"silver/case_log")?s.read().format("delta").load(base+"/silver/case_log").count():0)
    // visible: rows a reader of the pinned snapshot sees; uncommitted: history rows of snapshots without a manifest.
    +" visible="+(gold?Snapshots.assessments(s,base,Snapshots.latest(s,base)).count():0)
-   +" uncommitted="+(DeltaTable.isDeltaTable(s,base+"/gold/assessment_history")?Snapshots.uncommitted(s,base,Snapshots.HISTORY).count():0));
+   +" uncommitted="+(Snapshots.exists(s,base,"gold/assessment_history")?Snapshots.uncommitted(s,base,Snapshots.HISTORY).count():0));
   s.stop();
  }
 }
