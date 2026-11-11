@@ -64,7 +64,7 @@ docker compose --profile demo run --rm verify io.coldchain.Query --scope recipie
 Host broker localhost:29092; Spark UI localhost:4041. Internal Kafka kafka:9092. DATA_DIR defaults to /data; pipeline-data persists Bronze, Silver, Gold and checkpoints. The simulator pauses 40 seconds between initial and corrected assignments. The verifier waits up to `VERIFY_TIMEOUT_SECONDS` (600 by default) for the corrected snapshot, and the crash and restart checks wait up to 10 minutes per batch: on a shared CI runner one demo batch has taken 97–134 s. This is a demo timing assumption, not a reliable synchronization contract; the hardened verifier/simulator story replaces it with committed-snapshot acknowledgement and run-scoped IDs.
 
 ```sh
-mvn -s maven-settings.xml -B test
+mvn -s maven-settings.xml -B test   # the test JVM's heap is capped at 4 GiB (pom.xml), what a CI runner's JVM gets by default
 mvn -s maven-settings.xml -B test -Dtest=ScaleBenchmark -Dbench=true -Dcontainers=400 -Dunits=10 -Dhours=48   # correction latency
 export ALLOW_SYNTHETIC_SPECS=true   # demo only: lets the pipeline use the simulator's synthetic thresholds
 docker compose logs -f pipeline

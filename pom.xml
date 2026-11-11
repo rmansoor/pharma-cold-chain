@@ -8,6 +8,6 @@
 <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>5.11.4</version><scope>test</scope></dependency>
 </dependencies><build><plugins>
 <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version></plugin>
-<plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.5.2</version><configuration><argLine>--add-opens=java.base/sun.nio.ch=ALL-UNNAMED</argLine><environmentVariables><SPARK_LOCAL_IP>127.0.0.1</SPARK_LOCAL_IP></environmentVariables></configuration></plugin>
+<plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.5.2</version><configuration><argLine>--add-opens=java.base/sun.nio.ch=ALL-UNNAMED -Xmx4g</argLine><environmentVariables><SPARK_LOCAL_IP>127.0.0.1</SPARK_LOCAL_IP></environmentVariables></configuration></plugin>
 <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-dependency-plugin</artifactId><version>3.8.1</version></plugin>
 </plugins></build></project>
