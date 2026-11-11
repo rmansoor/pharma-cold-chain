@@ -17,6 +17,10 @@ jobs:
       - run: mvn -s maven-settings.xml -B test
       - name: Secret scan (source and history)
         run: docker run --rm -v "$PWD":/repo zricethezav/gitleaks:v8.24.3 git /repo --no-banner
+      - name: Alert rules and Prometheus configuration
+        run: |
+          docker run --rm -v "$PWD/ops/prometheus":/r -w /r --entrypoint promtool prom/prometheus:v3.5.0 test rules alerts.test.yml
+          docker run --rm -v "$PWD/ops/prometheus":/etc/prometheus --entrypoint promtool prom/prometheus:v3.5.0 check config /etc/prometheus/prometheus.yml
   runtime:
     name: Fresh Compose deployment, demo, restart and crash
     needs: test
@@ -44,3 +48,17 @@ jobs:
         run: |
           docker compose down -v
           docker compose -p pharma-cold-chain-crash --profile demo down -v
+  ops:
+    name: Operations drill (stall alert, recovery, checkpoint migration)
+    needs: test
+    runs-on: ubuntu-24.04
+    # The demo, a 6-minute stall before the alert fires, the recovery and a full rebuild in a new namespace.
+    timeout-minutes: 60
+    env: {CODE_VERSION: '${{ github.sha }}'}
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ops-drill.sh
+      - if: failure()
+        run: docker compose -p pharma-cold-chain-ops --profile ops logs --no-color --tail 200
+      - if: always()
+        run: docker compose -p pharma-cold-chain-ops --profile ops --profile demo down -v

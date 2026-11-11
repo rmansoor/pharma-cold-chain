@@ -1,0 +1,104 @@
+# promtool test rules ops/prometheus/alerts.test.yml (CI runs it in the Prometheus image).
+rule_files: [alerts.yml]
+evaluation_interval: 15s
+tests:
+  # The pipeline process and the monitor stay up, but records stop being published: the stall alert fires after 5 + 1 minutes.
+  - interval: 15s
+    input_series:
+      - series: 'up{job="coldchain-monitor"}'
+        values: '1x40'
+      - series: 'coldchain_monitor_up'
+        values: '1x40'
+      - series: 'coldchain_oldest_unpublished_age_seconds'
+        values: '0 0 0 0 15+15x36'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ColdChainPublicationStalled
+        exp_alerts: []
+      # Over 300 s from 6m, but pending for the 1 m the rule waits: one slow scrape does not page.
+      - eval_time: 6m30s
+        alertname: ColdChainPublicationStalled
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: ColdChainPublicationStalled
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: "No snapshot has published records that arrived 6m 15s ago"
+              runbook: "docs/decisions-and-operations.md#triage-stalled-publication"
+      - eval_time: 7m
+        alertname: ColdChainMonitorDown
+        exp_alerts: []
+  # An idle pipeline: no commit for hours, nothing waiting. Commit age alone must not page.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="coldchain-monitor"}'
+        values: '1x180'
+      - series: 'coldchain_monitor_up'
+        values: '1x180'
+      - series: 'coldchain_oldest_unpublished_age_seconds'
+        values: '0x180'
+      - series: 'coldchain_commit_age_seconds'
+        values: '3600+60x180'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: ColdChainPublicationStalled
+        exp_alerts: []
+  # A recovered stall: once a snapshot publishes the waiting records, the age returns to 0 and the alert resolves.
+  - interval: 15s
+    input_series:
+      - series: 'coldchain_oldest_unpublished_age_seconds'
+        values: '400+15x8 0x20'
+    alert_rule_test:
+      - eval_time: 90s
+        alertname: ColdChainPublicationStalled
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: "No snapshot has published records that arrived 8m 10s ago"
+              runbook: "docs/decisions-and-operations.md#triage-stalled-publication"
+      - eval_time: 4m
+        alertname: ColdChainPublicationStalled
+        exp_alerts: []
+  # The monitor fails to collect (for example the lake is unreadable): the failure pages instead of going quiet.
+  - interval: 15s
+    input_series:
+      - series: 'up{job="coldchain-monitor"}'
+        values: '1x20'
+      - series: 'coldchain_monitor_up'
+        values: '1 1 0x18'
+      - series: 'coldchain_monitor_last_success_timestamp_seconds'
+        values: '0 15 15x18'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ColdChainMonitorDown
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: "Cold-chain metrics are not being collected"
+              runbook: "docs/decisions-and-operations.md#triage-stalled-publication"
+  # A conflict left open for over an hour; one resolved within the hour does not alert.
+  - interval: 5m
+    input_series:
+      - series: 'coldchain_conflict_cases_open'
+        values: '1x15'
+      - series: 'coldchain_quarantine_open'
+        values: '1+10x12'
+    alert_rule_test:
+      - eval_time: 55m
+        alertname: ColdChainConflictsOpen
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: ColdChainConflictsOpen
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "1 conflict cases have been open for over an hour"
+              runbook: "docs/decisions-and-operations.md#triage-data-quality"
+      - eval_time: 60m
+        alertname: ColdChainQuarantineRising
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "60 more open quarantine records than 30 minutes ago"
+              runbook: "docs/decisions-and-operations.md#triage-data-quality"

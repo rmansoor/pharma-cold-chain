@@ -3,7 +3,7 @@ import java.util.Arrays;
 import io.delta.tables.DeltaTable;
 import org.apache.spark.sql.*;
 import static org.apache.spark.sql.functions.*;
-// Prints one line of persisted-state counts so restart checks can compare before and after.
+// Prints one line of persisted-state counts so restart checks can compare before and after, and the published state's digests.
 public final class Inspect {
  public static void main(String[] args) {
   SparkSession s=Pipeline.session("Cold-chain inspect");s.sparkContext().setLogLevel("ERROR");String base=Pipeline.DATA;
@@ -29,6 +29,9 @@ public final class Inspect {
    +" notifications="+(Snapshots.exists(s,CaseStore.DIR,CaseStore.NOTIFICATIONS)?Snapshots.table(s,CaseStore.DIR,CaseStore.NOTIFICATIONS).count():0)
    +" deliveries="+(Snapshots.exists(s,CaseStore.DIR,CaseStore.NOTIFICATIONS)?Snapshots.table(s,CaseStore.DIR,CaseStore.NOTIFICATIONS).select("deliveryId").distinct().count():0)
    +" openCases="+(Snapshots.exists(s,CaseStore.DIR,CaseStore.CASES)?Snapshots.table(s,CaseStore.DIR,CaseStore.CASES).filter("status = 'OPEN'").count():0));
+  // The published state's digests, which do not depend on snapshot IDs: two namespaces fed the same records print the same line.
+  if(gold){Row l=Snapshots.latest(s,base);System.out.println("DIGESTS products="+l.getAs("products")+" evidenceRevisions="+l.getAs("evidenceRevisions")
+   +" assessments="+l.getAs("assessmentsDigest")+" evidence="+l.getAs("evidenceDigest")+" intervals="+l.getAs("intervalsDigest"));}
   s.stop();
  }
 }

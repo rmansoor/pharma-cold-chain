@@ -49,9 +49,12 @@ flowchart TD
   R --> VERIFY[Java scenario verifier]
   R --> Q[Scoped investigation queries: product, lot, shipment, location, recipient]
   ING -. offsets and progress .-> CK[(Spark checkpoint)]
+  S -. end offsets, oldest unpublished record .-> MON[Monitor: metrics from outside the pipeline]
+  M -. newest manifest and its figures .-> MON
+  MON --> PROM[Prometheus alert rules] --> GRAF[Grafana dashboard]
 ```
 
-One Spark local[2] application executes one micro-batch callback at a time. Kafka has four topics with four partitions, seven-day retention and replication factor one. Bronze is merged by topic/partition/offset. Silver is built in full on the first snapshot and after a rule, code or configuration change; otherwise only the Bronze records added since the previous snapshot are parsed, and each Silver table is updated only for the subjects they can change (SID-29). The elementary measured segments are persisted in gold/exposure_segments and the merged intervals behind every Gold duration in gold/exposure_intervals, keyed by snapshot; the other interval datasets are temporary Spark SQL views. Gold history is insert-only by product/snapshot; a commit manifest is appended last. Readers must pin a committed snapshot before reading history.
+One Spark local[2] application executes one micro-batch callback at a time. Kafka has four topics with four partitions, seven-day retention and replication factor one. Bronze is merged by topic/partition/offset. Silver is built in full on the first snapshot and after a rule, code or configuration change; otherwise only the Bronze records added since the previous snapshot are parsed, and each Silver table is updated only for the subjects they can change (SID-29). The elementary measured segments are persisted in gold/exposure_segments and the merged intervals behind every Gold duration in gold/exposure_intervals, keyed by snapshot; the other interval datasets are temporary Spark SQL views. Gold history is insert-only by product/snapshot; a commit manifest is appended last. Readers must pin a committed snapshot before reading history. In the ops profile a separate monitor process reads Kafka offsets, the newest manifest and the lake's files every 15 s and serves Prometheus metrics; Prometheus evaluates the alert rules and Grafana shows the dashboard (SID-26).
 
 ## Proposed production architecture
 
