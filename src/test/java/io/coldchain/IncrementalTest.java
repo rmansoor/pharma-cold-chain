@@ -30,14 +30,25 @@ class IncrementalTest {
   Pipeline.DATA=dir;Pipeline.process(batch(records),id,"lineage-incremental");
   Row c=Snapshots.latest(s,dir);
   assertEquals(id,(long)c.getAs("snapshotId"));assertEquals(mode,c.getAs("recomputeMode"),"snapshot "+id);
+  assertEquals(mode,c.getAs("silverMode"),"Silver of snapshot "+id);
+  assertSilverMatchesFullBuild(s,dir,c);
   // The units the snapshot wrote rows for (a tombstone included) are exactly the affected ones.
-  assertEquals(recomputed,TimelineTest.strings(Snapshots.table(s,dir,Snapshots.HISTORY).filter(col("snapshotId").equalTo(id)),
+  if(recomputed!=null)assertEquals(recomputed,TimelineTest.strings(Snapshots.table(s,dir,Snapshots.HISTORY).filter(col("snapshotId").equalTo(id)),
    "concat(productId,IF(coalesce(removed,false),' removed',''))"),"recomputed units of snapshot "+id);
   Dataset<Row> canonical=s.read().format("delta").option("versionAsOf",Snapshots.recorded(c,"silver/events_current")).load(dir+"/silver/events_current");
   Model.Result full=Model.exposure(s,canonical);
   Row reference=Snapshots.digests(full.assessments(),full.intervals()).first();
   for(String d:Replay.DIGESTS)assertEquals(reference.<Object>getAs(d),c.<Object>getAs(d),d+" of snapshot "+id+" equals a full recomputation");
   return c;
+ }
+ // Every Silver table the snapshot recorded equals a full build from the same Bronze version, row for row.
+ static void assertSilverMatchesFullBuild(SparkSession s,String dir,Row c)throws Exception {
+  String reference=Files.createTempDirectory("cold-chain-silver").toString();
+  Map<String,Long> versions=new LinkedHashMap<>();
+  long started=System.nanoTime();
+  Silver.full(s,reference,0,s.read().format("delta").option("versionAsOf",Snapshots.recorded(c,"bronze/events")).load(dir+"/bronze/events"),versions,"REFERENCE");
+  assertEquals(List.of(),Silver.differences(s,dir,Silver.versions(c),reference,versions),"Silver of snapshot "+c.getAs("snapshotId")+" differs from a full build");
+  System.out.println("SILVER CHECK ms="+(System.nanoTime()-started)/1_000_000);
  }
  // A correction: the base event at the next revision with the given fields changed.
  static Map<String,Object> revised(int base,Object... fields) {
@@ -86,6 +97,51 @@ class IncrementalTest {
    Row config=step(d,9,"FULL",List.of("UNIT-A","UNIT-D"),List.of(revised(10,"custodianId","CARRIER-3")));
    assertEquals("CONFIGURATION_CHANGED",config.getAs("recomputeReason"));
   } finally {s.conf().set(Specifications.ALLOW_SYNTHETIC,true);}
+ }
+ // Corrections aimed at every Silver table. step checks each snapshot's Silver against a full build, and its Gold against a
+ // full recomputation.
+ @Test void incrementalSilverEqualsAFullBuild()throws Exception {
+  String d=Files.createTempDirectory("cold-chain-incremental-silver").toString();
+  step(d,0,"FULL",null,new ArrayList<>(Simulator.initial()));
+  // Calibration ends at 12:05: SENSOR-1's reading is only partly calibrated.
+  step(d,1,"INCREMENTAL",null,List.of(revised(12,"endTime",t(5))));
+  // The shipment carried BOX-A, not BOX-B.
+  step(d,2,"INCREMENTAL",null,List.of(revised(13,"containerId","BOX-A")));
+  // CARTON-1 moves to a new PALLET-2 in BOX-B: UNIT-D's container path changes, and with it shipments and invalidations.
+  step(d,3,"INCREMENTAL",null,List.of(revised(8,"parentId","PALLET-2"),
+   Simulator.event("pack-pallet-2","PACKING","childId","PALLET-2","childLevel","PALLET","parentId","BOX-B","parentLevel","CONTAINER","startTime",t(0),"endTime",t(10))));
+  // The sensor was in BOX-B (an assignment correction, so invalidations list the units of both boxes); then UNIT-D leaves its
+  // carton at 12:08: a unit-level change whose container is three memberships up, which changes UNIT-D's path in BOX-B and
+  // with it the invalidation rows of the corrected assignment.
+  step(d,4,"INCREMENTAL",null,List.of(revised(3,"containerId","BOX-B")));
+  step(d,5,"INCREMENTAL",null,List.of(revised(7,"endTime",t(8))));
+  // CARTON-1 is also used as a pallet in BOX-A (LEVEL_MISMATCH, CONTRADICTORY_PARENT), and BOX-B sits on PALLET-2 (CYCLE).
+  step(d,6,"INCREMENTAL",null,List.of(Simulator.event("pack-odd","PACKING","childId","CARTON-1","childLevel","PALLET","parentId","BOX-A","parentLevel","CONTAINER",
+   "startTime",t(0),"endTime",t(10))));
+  step(d,7,"INCREMENTAL",null,List.of(Simulator.event("pack-loop","PACKING","childId","BOX-B","childLevel","PALLET","parentId","PALLET-2","parentLevel","CONTAINER",
+   "startTime",t(0),"endTime",t(10))));
+  // The loop is corrected away; a second custodian overlaps BOX-A's.
+  Map<String,Object> unlooped=Simulator.event("pack-loop","PACKING","childId","PALLET-9","childLevel","PALLET","parentId","BOX-C","parentLevel","CONTAINER",
+   "startTime",t(0),"endTime",t(10));
+  unlooped.put("revision",2);
+  step(d,8,"INCREMENTAL",null,List.of(unlooped,Simulator.event("custody-A-3","CUSTODY","containerId","BOX-A","custodianId","CARRIER-9","startTime",t(0),"endTime",t(10))));
+  // An out-of-range reading is quarantined, then resolved by a valid higher revision; records without an eventId stay open.
+  Map<String,Object> bad=Simulator.event("reading-bad","READING","sensorId","SENSOR-1","startTime",t(0),"endTime",t(10),"temperatureC",500.0);
+  step(d,9,"INCREMENTAL",null,List.of(bad,"{broken","{\"kind\":\"READING\"}"));
+  Map<String,Object> fixed=new LinkedHashMap<>(bad);fixed.put("revision",2);fixed.put("temperatureC",6.0);
+  step(d,10,"INCREMENTAL",null,List.of(fixed));
+  // A second payload for reading-hot revision 1 withholds it; revision 2 resolves the case.
+  step(d,11,"INCREMENTAL",null,List.of(with(6,"temperatureC",3.0)));
+  step(d,12,"INCREMENTAL",null,List.of(revised(6,"temperatureC",4.0)));
+  // The assignment now ends at 12:07: contradictions, timelines, invalidations and sampling gaps of the assignment.
+  step(d,13,"INCREMENTAL",null,List.of(with(3,"revision",3,"containerId","BOX-B","endTime",t(7))));
+  // Both of SENSOR-1's readings now end early (12:06 and 12:03): the sampling gaps of its assignment change.
+  Map<String,Object> shorter=new LinkedHashMap<>(fixed);shorter.put("revision",3);shorter.put("endTime",t(3));
+  Row last=step(d,14,"INCREMENTAL",null,List.of(revised(6,"revision",3,"temperatureC",4.0,"endTime",t(6)),shorter));
+  assertTrue(Snapshots.table(s,d,Silver.LINEAGE_ANOMALIES).filter("anomaly = 'LEVEL_MISMATCH'").count()>0,"the scenario reaches lineage anomalies");
+  assertTrue(Snapshots.table(s,d,Silver.QUARANTINE).filter("status = 'RESOLVED'").count()>0,"and a resolved quarantine record");
+  assertEquals(14L,Snapshots.table(s,d,Snapshots.COMMITS).filter("silverMode = 'INCREMENTAL'").count());
+  assertNull(last.getAs("silverReason"));
  }
  @Test void replayRebuildsTheSameStateInItsOwnNamespace()throws Exception {
   String d=Files.createTempDirectory("cold-chain-live").toString();

@@ -51,7 +51,7 @@ flowchart TD
   ING -. offsets and progress .-> CK[(Spark checkpoint)]
 ```
 
-One Spark local[2] application executes one micro-batch callback at a time. Kafka has four topics with four partitions, seven-day retention and replication factor one. Bronze is merged by topic/partition/offset. Silver tables are rebuilt from Bronze. The elementary measured segments are persisted in gold/exposure_segments and the merged intervals behind every Gold duration in gold/exposure_intervals, keyed by snapshot; the other interval datasets are temporary Spark SQL views. Gold history is insert-only by product/snapshot; a commit manifest is appended last. Readers must pin a committed snapshot before reading history.
+One Spark local[2] application executes one micro-batch callback at a time. Kafka has four topics with four partitions, seven-day retention and replication factor one. Bronze is merged by topic/partition/offset. Silver is built in full on the first snapshot and after a rule, code or configuration change; otherwise only the Bronze records added since the previous snapshot are parsed, and each Silver table is updated only for the subjects they can change (SID-29). The elementary measured segments are persisted in gold/exposure_segments and the merged intervals behind every Gold duration in gold/exposure_intervals, keyed by snapshot; the other interval datasets are temporary Spark SQL views. Gold history is insert-only by product/snapshot; a commit manifest is appended last. Readers must pin a committed snapshot before reading history.
 
 ## Proposed production architecture
 
@@ -100,7 +100,7 @@ Proposed: managed Spark executors, shared object storage, replicated Kafka, vers
 11. Apply the illustrative excursion rule; carry missing coverage and latest inventory context.
 12. Insert interval evidence and product assessments keyed by snapshotId, after deleting any rows an unpublished attempt left; write the manifest only after all of them succeed. A batch already published writes nothing.
 13. Consumers select max committed snapshotId and read only matching assessment-history records.
-14. On late evidence or correction, compare the new canonical events with the previous snapshot's. Recompute in Gold only the units the changes can affect, on both their old and new values, from the events those units depend on. Write their rows and tombstones as a change log; a snapshot's state is each unit's newest row. Bronze parsing and Silver are still rebuilt in full. `Replay` recomputes everything into an isolated namespace as the reference.
+14. On late evidence or correction, compare the new canonical events with the previous snapshot's. Recompute in Gold only the units the changes can affect, on both their old and new values, from the events those units depend on. Write their rows and tombstones as a change log; a snapshot's state is each unit's newest row. Silver is updated the same way, per subject, from the Bronze records added since the previous snapshot. `Replay` recomputes everything into an isolated namespace as the reference.
 
 ## Business behavior and acceptance scenario
 
