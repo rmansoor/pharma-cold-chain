@@ -126,10 +126,10 @@ public final class Snapshots {
   if(allowSynthetic!=previous.<Boolean>getAs("allowSyntheticSpecifications"))return "CONFIGURATION_CHANGED";
   return null;
  }
- // The manifest row: identity, versions, how the snapshot was computed, source high-watermarks, input and output table
+ // The manifest row: identity, versions, how the snapshot and its Silver were computed, source high-watermarks, input and output table
  // versions and the digests of its state.
  static Dataset<Row> manifest(long id,String lineage,String run,String code,boolean allowSynthetic,String mode,String reason,
-   long changed,long recomputed,Dataset<Row> source,Dataset<Row> current,Dataset<Row> digests,Map<String,Long> versions) {
+   String silverMode,String silverReason,long changed,long recomputed,Dataset<Row> source,Dataset<Row> current,Dataset<Row> digests,Map<String,Long> versions) {
   StringJoiner tables=new StringJoiner(",","array(",")");
   versions.forEach((t,v)->tables.add("named_struct('table','"+t+"','version',CAST("+v+" AS bigint))"));
   Dataset<Row> marks=source.groupBy("topic","partition").agg(max("offset").alias("maxOffset"),max("kafkaTime").alias("maxKafkaTime"))
@@ -138,7 +138,7 @@ public final class Snapshots {
   return marks.crossJoin(digests).crossJoin(asOf).select(lit(id).alias("snapshotId"),current_timestamp().alias("committedAt"),
    col("products"),lit(lineage).alias("lineageId"),lit(run).alias("runId"),lit(code).alias("codeVersion"),lit(Model.RULE_VERSION).alias("ruleVersion"),
    lit(Policy.VERSION).alias("policyVersion"),lit(Model.ROW_VERSION).alias("rowVersion"),lit(allowSynthetic).alias("allowSyntheticSpecifications"),lit(mode).alias("recomputeMode"),
-   lit(reason).cast("string").alias("recomputeReason"),lit(changed).alias("changedEvents"),lit(recomputed).alias("recomputedProducts"),
+   lit(reason).cast("string").alias("recomputeReason"),lit(silverMode).alias("silverMode"),lit(silverReason).cast("string").alias("silverReason"),lit(changed).alias("changedEvents"),lit(recomputed).alias("recomputedProducts"),
    col("dataAsOf"),col("sourceHighWatermarks"),expr(tables.toString()).alias("tableVersions"),
    col("evidenceRevisions"),col("evidenceDigest"),col("assessmentsDigest"),col("intervalsDigest"));
  }

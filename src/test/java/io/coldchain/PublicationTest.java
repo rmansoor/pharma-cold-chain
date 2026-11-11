@@ -81,6 +81,25 @@ class PublicationTest {
   assertTrue(refused.getMessage().contains("lineage-1"),refused.getMessage());
   assertEquals(1L,(long)latest(d).getAs("snapshotId"));assertEquals(0L,Snapshots.uncommitted(s,d,Snapshots.HISTORY).count());
  }
+ @Test void silverRetriesStartFromThePublishedSilver()throws Exception {
+  String ref=clean(),d=lake("silver-faulty");
+  run(d,initial(),0,LINEAGE,null);
+  // Stopped after canonical selection, then after the whole of Silver; neither attempt published anything.
+  for(String stage:List.of("canonical","silver")) {
+   IllegalStateException e=assertThrows(IllegalStateException.class,()->run(d,correction(),1,LINEAGE,stage+":1"));
+   assertTrue(e.getMessage().contains("after "+stage),e.getMessage());
+   assertEquals(0L,(long)latest(d).getAs("snapshotId"),stage);
+  }
+  // Plant a canonical row no build would write, as if an earlier attempt had run other code: the retry must remove it.
+  Snapshots.table(s,d,Silver.CURRENT).limit(1).withColumn("eventId",lit("stale")).write().format("delta").mode("append").save(d+"/"+Silver.CURRENT);
+  run(d,correction(),1,LINEAGE,null);
+  Row retried=latest(d),reference=latest(ref);
+  assertEquals("INCREMENTAL",retried.getAs("silverMode"));
+  // Bronze ingestion times differ between lakes, so Silver is compared with a full build of this lake's Bronze.
+  IncrementalTest.assertSilverMatchesFullBuild(s,d,retried);
+  assertEquals(0L,Silver.at(s,d,Silver.CURRENT,Snapshots.recorded(retried,Silver.CURRENT)).filter("eventId = 'stale'").count());
+  for(String digest:Replay.DIGESTS)assertEquals(reference.<Object>getAs(digest),retried.<Object>getAs(digest),digest+" matches the clean run");
+ }
  @Test void readersSeeATableWrittenByAnotherProcess()throws Exception {
   // A reader polled while another process wrote the first commit of gold/commits. The commit is copied into place here, as a
   // write from outside this JVM; DeltaTable.isDeltaTable keeps its cached answer, Snapshots.exists does not.

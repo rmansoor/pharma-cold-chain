@@ -44,8 +44,9 @@ class ScaleBenchmark {
    Row c=Snapshots.latest(s,lake);
    long t2=System.nanoTime();Row replay=Replay.run(s,lake,lake+"-replay",null);long reference=(System.nanoTime()-t2)/1_000_000;
    for(String d:Replay.DIGESTS)Assertions.assertEquals(c.<Object>getAs(d),replay.<Object>getAs(d),d);
+   Assertions.assertEquals(List.of(),Silver.differences(s,lake,Silver.versions(c),lake+"-replay",Silver.versions(replay)),"Silver equals the full replay's");
    System.out.println("BENCH events="+events.size()+" units="+(containers*units)+" containers="+containers+" readings="+(containers*hours*6)
-    +" initialFullMs="+full+" correctionIncrementalMs="+incremental+" recomputed="+c.getAs("recomputedProducts")+" fullReplayMs="+reference+" digestsMatch=true");
+    +" initialFullMs="+full+" correctionIncrementalMs="+incremental+" recomputed="+c.getAs("recomputedProducts")+" fullReplayMs="+reference+" digestsMatch=true silverMatches=true");
   } finally {Pipeline.DATA=data;s.stop();}
  }
 }

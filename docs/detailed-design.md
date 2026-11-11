@@ -29,26 +29,27 @@ Product specifications are operational input, not static Java constants. Overlap
 | Path under DATA_DIR | Key / write mode | Content |
 |---|---|---|
 | bronze/events | topic, partition, offset / insert-only MERGE | Raw JSON, Kafka key, broker timestamp (kafkaTime), sourceSystem and sourceSystemDeclared, ingestedAt and ingestBatchId. A replayed offset keeps its first ingestedAt and ingestBatchId; a repeated payload at a new offset is a new row of evidence. Rows written before these columns existed have nulls in them |
-| silver/quarantine | caseId (source coordinates) / rebuilt snapshot | Invalid raw records, source coordinates, parsed eventId/revision, reason codes, resolution status ([event-contracts.md](event-contracts.md#validation-outcome)) |
-| silver/conflict_cases | caseId / rebuilt snapshot | PAYLOAD_MISMATCH and KIND_MISMATCH cases with every competing variant and its coordinates, and resolution status |
+| silver/events_parsed | topic, partition, offset / full build, or append of the records added since the previous snapshot | Every Bronze record parsed: contract fields, payloadHash, reason codes and the valid flag. The incremental build reads an eventId's records here instead of parsing Bronze again |
+| silver/quarantine | caseId (source coordinates) / replaced per eventId | Invalid raw records, source coordinates, parsed eventId/revision, reason codes, resolution status ([event-contracts.md](event-contracts.md#validation-outcome)) |
+| silver/conflict_cases | caseId / replaced per eventId | PAYLOAD_MISMATCH and KIND_MISMATCH cases with every competing variant and its coordinates, and resolution status |
 | silver/case_log | caseId, status / insert-only MERGE | Audit trail: the snapshot and time each quarantine or conflict case was first OPEN and first RESOLVED |
-| silver/events_current | latest eventId revision / rebuilt snapshot | Valid canonical fields plus source metadata |
-| silver/memberships | eventId / rebuilt snapshot | Every direct membership (PLACEMENT as UNIT → CONTAINER, and PACKING) with child/parent IDs and levels, interval, eventId, revision and the anomalies it takes part in |
-| silver/lineage_anomalies | rebuilt snapshot | CONTRADICTORY_PARENT, LEVEL_MISMATCH and CYCLE with subject ID, event IDs and window |
-| silver/timelines | eventId, revision / rebuilt snapshot | Every valid revision of each ASSIGNMENT and CUSTODY event with source coordinates, sourceSystem, a current flag and, on current rows, anomalies |
-| silver/timeline_anomalies | rebuilt snapshot | SENSOR_IN_TWO_CONTAINERS and CUSTODY_OVERLAP with subject, event IDs and window |
-| silver/mapping_invalidations | rebuilt snapshot | Per assignment correction (fromRevision → toRevision), the units mapped by the FORMER and the REVISED revision, with sensor, container and window |
-| silver/unit_containers | rebuilt snapshot | Resolved container interval per serialized unit, with productCode, lotId, path (unit → … → container) and lineageIds (the membership events used) |
-| silver/specifications | rebuilt snapshot | The specification that applies to each product code over time after precedence (latest approval wins), with thresholds, allowance and the synthetic flag |
-| silver/specification_overlaps | rebuilt snapshot | Every window where specifications overlap: all candidates, the one that applies (or none) and the resolution |
-| silver/readings | eventId / rebuilt snapshot | Each current reading: normalized °C, reported value and unit, point flag, covering calibrations, largest uncertainty, calibrated seconds and calibration status |
-| silver/sampling_gaps | rebuilt snapshot | Windows inside each current assignment with no interval reading from its sensor |
+| silver/events_current | latest eventId revision / replaced per eventId | Valid canonical fields plus source metadata |
+| silver/memberships | eventId / replaced per child ID in the lineage scope | Every direct membership (PLACEMENT as UNIT → CONTAINER, and PACKING) with child/parent IDs and levels, interval, eventId, revision and the anomalies it takes part in |
+| silver/lineage_anomalies | subjectId / replaced per ID in the lineage scope | CONTRADICTORY_PARENT, LEVEL_MISMATCH and CYCLE with subject ID, event IDs and window |
+| silver/timelines | eventId, revision / replaced per eventId | Every valid revision of each ASSIGNMENT and CUSTODY event with source coordinates, sourceSystem, a current flag and, on current rows, anomalies |
+| silver/timeline_anomalies | anomaly, subjectId / replaced per sensor or container | SENSOR_IN_TWO_CONTAINERS and CUSTODY_OVERLAP with subject, event IDs and window |
+| silver/mapping_invalidations | assignmentId / replaced per assignment | Per assignment correction (fromRevision → toRevision), the units mapped by the FORMER and the REVISED revision, with sensor, container and window |
+| silver/unit_containers | productId / replaced per unit in the lineage scope | Resolved container interval per serialized unit, with productCode, lotId, path (unit → … → container) and lineageIds (the membership events used) |
+| silver/specifications | productCode / replaced per product code | The specification that applies to each product code over time after precedence (latest approval wins), with thresholds, allowance and the synthetic flag |
+| silver/specification_overlaps | productCode / replaced per product code | Every window where specifications overlap: all candidates, the one that applies (or none) and the resolution |
+| silver/readings | eventId / replaced per reading | Each current reading: normalized °C, reported value and unit, point flag, covering calibrations, largest uncertainty, calibrated seconds and calibration status |
+| silver/sampling_gaps | assignmentId / replaced per assignment | Windows inside each current assignment with no interval reading from its sensor |
 | gold/exposure_segments | productId, snapshotId / append | Every elementary measured segment of each recomputed unit, per snapshot: product, interval, seconds, lineage, assignment, sensor, reading and specification, temperature, limits, outOfRange, and the exact source revisions |
 | gold/exposure_intervals | productId, snapshotId, metric, startTime / append | The disjoint intervals behind every Gold duration (section 4) and each out-of-range point, with seconds, ruleVersion and the exact revision of every source event: kind, eventId, revision, payloadHash, topic, partition, offset |
 | gold/assessment_history | productId, snapshotId / append after removing the snapshot's uncommitted rows | Change log: rows for the units each snapshot recomputed, and a tombstone (`removed`) for a unit that no longer exists. Coverage, excursion, missing data, rule, inventory, evidence IDs and sourceRevisions; inventory age and STALE_INVENTORY are derived when read (section 5) |
 | gold/snapshot_impacts | snapshotId, eventId / append | Each canonical event that changed since the previous snapshot: ADDED, REVISED or WITHHELD, with old and new revision |
 | gold/assessment_policies | policyVersion / insert-only MERGE | Each policy version: states with meaning and impliesRelease (always false), reasons with condition and state, flags, inventory age limit, ruleVersion and assessment scope |
-| silver/shipments | rebuilt snapshot | One row per shipped unit: shipmentId, the SHIPMENT event and revision, recipientId, productId, the container and lineage it travelled in (for container lines), dispatchedAt and deliveredAt |
+| silver/shipments | eventId / replaced per shipment event | One row per shipped unit: shipmentId, the SHIPMENT event and revision, recipientId, productId, the container and lineage it travelled in (for container lines), dispatchedAt and deliveredAt |
 | gold/commits | snapshotId / insert-only MERGE | The manifest: one row per published snapshot with lineage and run identity, code, rule and policy versions, source high-watermarks, input and output table versions, and evidence and assessment digests (section 6) |
 | gold/review_outbox | deliveryId / append after removing the snapshot's uncommitted rows | Review items of each snapshot: NEW, REVISED and WITHDRAWN, with reason, both assessments and the evidence revisions (section 9) |
 | outbox/relayed | snapshotId / insert-only MERGE | Each committed snapshot whose review items the relay sent and the sink accepted, with item count, time and run |
@@ -198,7 +199,28 @@ The digests cover content only, not times or identities. So a retried snapshot c
 
 ## 7. Incremental recomputation and replay
 
-Bronze is still parsed and canonicalized in full on each batch, and Silver is still rebuilt in full. Gold is recomputed only for the units the batch can affect.
+Silver (Silver.java) and Gold are each built in full or incrementally. Gold is recomputed only for the units the batch can affect; Silver only for the subjects the new Bronze records can change.
+
+**Silver mode.** Silver is built in full whenever Gold is (below), and also when the previous snapshot did not record its Bronze version and every Silver table (snapshots before SID-29: PREVIOUS_SILVER_FORMAT). The manifest records silverMode and silverReason. An incremental build:
+
+1. Restores every Silver table to the version the previous snapshot recorded, if it moved since. An attempt that stopped before its manifest leaves nothing behind, so each build starts from exactly the published Silver.
+2. Parses only the Bronze records that are not in the previous snapshot's Bronze version, and appends them to silver/events_parsed.
+3. Recomputes quarantine, conflict cases and canonical selection for every eventId that gained a record, from all of that eventId's parsed records. These depend on one eventId's records only, so the first-arrival rule and conflict withholding are unchanged. A record without an eventId is quarantined on its own.
+4. Compares the canonical rows of those eventIds with the previous snapshot's (the changes Gold uses), and replaces, in one MERGE per table, the rows of every subject a change can alter:
+
+| Table | Subject | Recomputed for |
+|---|---|---|
+| memberships, lineage_anomalies, unit_containers | packaging ID | The lineage scope: every ID below an ID a changed PLACEMENT or PACKING names (old or new value), and every ID above those, in the current graph (both IDs of a changed membership's old value are starting points, so the old value adds nothing). Recomputed from every membership naming a scope ID; rows about other IDs computed on the way are dropped |
+| timeline_anomalies | sensor, container | Sensors of changed assignments and containers of changed custody, from all their assignments or custody events |
+| timelines | eventId | Events that gained a record, and events in an old or new contradiction of those subjects |
+| mapping_invalidations | assignment | Assignments that gained a record, and assignments that ever named a container whose resolved units changed |
+| shipments | shipment event | Changed shipments, and shipments of containers whose resolved units changed |
+| specifications, specification_overlaps | product code | Product codes of changed specifications |
+| readings | reading | Changed readings, and readings of sensors whose calibrations changed |
+| sampling_gaps | assignment | Changed assignments, and assignments of sensors whose readings changed |
+
+Why the lineage scope is enough: an anomaly changes only if a membership it names changed, so it is about an ID that membership names or a cycle through it, all of whose IDs lie below and above it. A unit's container path changes only if a membership on it, or that membership's anomalies, changed, so the unit is below a changed ID. Every membership naming a scope ID is read, so each scope ID's anomalies and each scope unit's paths are computed from complete input.
+
 
 **Mode.** A snapshot is computed FULL when there is no previous snapshot, the previous one predates SID-23, or its ruleVersion, policyVersion, rowVersion, codeVersion or allowSyntheticSpecifications differs from the current run; the manifest records the reason. Otherwise it is INCREMENTAL: the previous manifest names the canonical version it used, and Impact.java compares that version with the new one.
 
@@ -226,7 +248,7 @@ Only the affected units' rows are kept, because units that merely share part of 
 
 **Change log.** Gold history, intervals and segments are written only for recomputed units, plus a tombstone (`removed`) for a unit that no longer exists. A snapshot's state is each unit's newest row up to it (section 6). Writes are appends after the snapshot's own uncommitted rows are deleted, so they never scan the tables. Manifest digests cover the whole state, not only the rows written.
 
-**Equivalence.** IncrementalTest runs ten batches covering every kind of correction, including a withheld membership that removes a unit and a configuration change that forces FULL. After each batch it checks two things: that the snapshot recomputed exactly the expected units, and that all five state digests equal a full recomputation of the same canonical events. In deployment, `Replay` recomputes a namespace's Bronze history in full into a separate, empty namespace with its own lineage, and compares the digests with the source snapshot computed from the same Bronze version (CI runs it after the demo). It applies the configuration that snapshot's manifest records (allowSyntheticSpecifications), not its own environment's; the first CI-style run without that reported a MISMATCH that was only a configuration difference.
+**Equivalence.** After every batch, IncrementalTest also builds Silver in full from the snapshot's Bronze version and compares every Silver table with the incremental one, row for row; a second sequence aims a correction at each Silver table (calibration, shipment, re-parented carton, LEVEL_MISMATCH and CONTRADICTORY_PARENT, a cycle and its correction, custody overlap, a quarantined record resolved by a valid revision, records without an eventId, a payload conflict and its resolution, a moved assignment). `Replay` compares Silver the same way, table by table, as well as the Gold digests. IncrementalTest runs ten batches covering every kind of correction, including a withheld membership that removes a unit and a configuration change that forces FULL. After each batch it checks two things: that the snapshot recomputed exactly the expected units, and that all five state digests equal a full recomputation of the same canonical events. In deployment, `Replay` recomputes a namespace's Bronze history in full into a separate, empty namespace with its own lineage, and compares the digests with the source snapshot computed from the same Bronze version (CI runs it after the demo). It applies the configuration that snapshot's manifest records (allowSyntheticSpecifications), not its own environment's; the first CI-style run without that reported a MISMATCH that was only a configuration difference.
 
 **Measured latency.** ScaleBenchmark: synthetic units, half in a carton on a pallet; one calibrated sensor per container reading every 10 minutes; one assignment moved. Single runs on a developer laptop under other load (load average 5–14), so the numbers show proportions, not targets. No scale has been agreed.
 
@@ -235,7 +257,16 @@ Only the affected units' rows are kept, because units that merely share part of 
 | 1,000 units, 100 containers, 24 h (16,901 events) | 30.2 s | 27.1 s, 20 units recomputed (before the append change below) | 29.3 s |
 | 4,000 units, 400 containers, 48 h (125,201 events) | 107.2 s | 52.8 s, 20 units recomputed | 106.5 s |
 
-At 4,000 units the correction's Gold work was 20.5 s against 75–80 s in full: impact 1.3 s, exposure 5.1 s against 35–39 s, publication 14.1 s against 40–42 s. Publication had taken 33 s while segments were rewritten and Gold MERGEs scanned whole tables; appends removed that. The remaining 31 s is the canonical (10–18 s) and Silver (10–17 s) rebuild, which still reads all Bronze. The digests matched the full replay in every run. Making canonical and Silver incremental is the next step; without it, correction latency still grows with retained history.
+At 4,000 units the correction's Gold work was 20.5 s against 75–80 s in full: impact 1.3 s, exposure 5.1 s against 35–39 s, publication 14.1 s against 40–42 s. Publication had taken 33 s while segments were rewritten and Gold MERGEs scanned whole tables; appends removed that. The remaining 31 s is the canonical (10–18 s) and Silver (10–17 s) rebuild, which still reads all Bronze. The digests matched the full replay in every run.
+
+**Incremental Silver (SID-29).** The same benchmark, canonical and Silver stage times from the COMMITTED line (load average 7–12):
+
+| Scale | Full build: canonical / rest of Silver | Incremental: canonical / rest of Silver | Correction end to end |
+|---|---|---|---|
+| 1,000 units, 24 h (16,901 events) | 4.1–6.1 s / 7.7–9.6 s | 5.0 s / 9.3 s | 25.9 s |
+| 4,000 units, 48 h (125,201 events) | 9.4–13.4 s / 9.2–13.4 s | 7.8–9.1 s / 12.3–22.5 s (four runs) | 41.0–60.2 s (52.8 s before) |
+
+The incremental build now writes only the affected rows, and Silver matched the full replay table by table in every run. It is not yet faster in a way that matters: at these sizes both builds are dominated by a fixed cost per Spark job and Delta commit, and the incremental build runs more of them (a restore check and a MERGE per table, scope searches). What still grows with history is each MERGE scanning its whole target table for matches and the read of silver/events_parsed for the changed eventIds; partitioning or clustering those tables by key, or deletion vectors, would bound that (one run with deletion vectors was not measurably faster). Above 48 h at 4,000 units the benchmark's initial full build fails in Gold (Model.exposure: Kryo cannot serialize java.nio.HeapByteBuffer under Java 17 module rules), on main as well; it is not caused by SID-29.
 
 Skew is not yet measured: hot sensors, container fanout, overlapping intervals and long product histories. Latency, throughput and recovery targets must be agreed and load-tested; none is claimed.
 

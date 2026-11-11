@@ -44,8 +44,11 @@ public final class Replay {
    +replayed.getAs("products")+" products, lineage "+replayed.getAs("lineageId"));
   Row original=source;
   if(original==null){System.out.println("No source snapshot was computed from that Bronze version; nothing to compare.");s.stop();return;}
-  List<String> differ=DIGESTS.stream().filter(d->!Objects.equals(original.getAs(d),replayed.getAs(d))).toList();
-  System.out.println(differ.isEmpty()?"MATCH: source snapshot "+original.getAs("snapshotId")+" equals the full replay"
+  List<String> differ=new ArrayList<>(DIGESTS.stream().filter(d->!Objects.equals(original.getAs(d),replayed.getAs(d))).toList());
+  // Silver too, table by table, for snapshots that recorded their Silver versions.
+  Map<String,Long> silver=Silver.versions(original);
+  differ.addAll(Silver.differences(s,args[0],silver,args[1],Silver.versions(replayed)));
+  System.out.println(differ.isEmpty()?"MATCH: source snapshot "+original.getAs("snapshotId")+" equals the full replay (Gold digests and "+silver.size()+" Silver tables)"
    :"MISMATCH: source snapshot "+original.getAs("snapshotId")+" differs in "+differ);
   s.stop();
   if(!differ.isEmpty())System.exit(1);
