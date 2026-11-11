@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Crash check. SID-15: a pipeline killed after the Bronze commit, before Spark marks the batch done, replays that batch on
 # restart without duplicating Bronze rows or losing offsets. SID-22: a pipeline killed after writing Gold history but before
-# the manifest leaves a snapshot readers cannot see; the restart publishes it exactly once.
+# the manifest leaves a snapshot readers cannot see; the restart publishes it exactly once. SID-25: a pipeline killed after
+# Kafka accepted a snapshot's review items, before the relay recorded them, resends them on restart; the case store, itself
+# restarted meanwhile, records each item once.
 # Waits up to 10 minutes for each batch, since batches on a shared CI runner can take minutes.
 # Uses its own disposable Compose project (volumes are deleted); stop other stacks on ports 29092/4041 first.
 # Usage: scripts/crash-check.sh [compose-project-name]
@@ -33,8 +35,8 @@ stopped() {
  return 1
 }
 
-# Build both images so a stale image from an earlier run cannot hide contract or state changes.
-dc --profile demo build pipeline verify >/dev/null 2>&1
+# Build every image so a stale image from an earlier run cannot hide contract or state changes.
+dc --profile demo build pipeline cases verify >/dev/null 2>&1
 FAIL_AT=bronze:0 dc up -d pipeline >/dev/null 2>&1
 stopped || fail "pipeline did not stop at the injected failure"
 code=${status#exited }
@@ -75,5 +77,36 @@ echo "published: $published"
 # The restart deletes the unpublished rows and writes the same ones again: no duplicate, nothing lost.
 [[ $(field "$published" history) -eq $(field "$partial" history) ]] || fail "the retry duplicated or lost Gold history"
 [[ $(field "$published" bronze) -eq $((examples+1)) ]] || fail "Bronze rows lost or duplicated"
-dc --profile demo down -v >/dev/null 2>&1
 echo "PASS: crash before the manifest left snapshot 1 invisible; the restart published it once with no duplicate rows."
+
+# Phase 3: the case store consumes everything relayed so far; then batch 2 stops after relaying, before recording it.
+delivered() {
+ for _ in $(seq 1 120); do
+  now=$(state); [[ $(field "$now" pending) -eq 0 && $(field "$now" deliveries) -eq $(field "$now" outbox) ]] && return 0; sleep 5
+ done
+ return 1
+}
+dc up -d cases >/dev/null 2>&1
+delivered || fail "review items were not delivered to the case store: $now"
+before=$now; echo "delivered: $before"
+[[ $(field "$before" outbox) -gt 0 ]] || fail "expected review items from the correction"
+dc stop pipeline >/dev/null 2>&1
+FAIL_AT=relay:2 dc up -d pipeline >/dev/null 2>&1
+correction=$(mktemp)
+sed -E 's/"revision": 1/"revision": 3/; s/"temperatureC": 5.4/"temperatureC": 15.4/' contracts/examples/reading.json >"$correction"
+publish "$correction"; rm -f "$correction"
+stopped || fail "pipeline did not stop at the injected relay failure"
+dc logs pipeline | grep -q "INJECTED FAILURE after relay batch=2" || fail "pipeline exited without the injected relay failure"
+sent=$(state); echo "sent: $sent"
+[[ $(field "$sent" lastSnapshot) -eq 2 && $(field "$sent" pending) -eq 1 ]] || fail "expected snapshot 2 committed and its items not recorded as relayed"
+[[ $(field "$sent" outbox) -gt $(field "$before" outbox) ]] || fail "snapshot 2 produced no review items"
+# The consumer is killed too, and both restart; the relay sends snapshot 2's items a second time.
+dc kill cases >/dev/null 2>&1
+dc up -d cases >/dev/null 2>&1
+FAIL_AT= dc up -d pipeline >/dev/null 2>&1
+delivered || fail "review items were not delivered after the restart: $now"
+echo "redelivered: $now"
+[[ $(field "$now" notifications) -eq $(field "$now" outbox) && $(field "$now" deliveries) -eq $(field "$now" outbox) ]] || fail "a review item was lost or notified twice"
+[[ $(field "$now" relayed) -eq $(field "$now" outbox) ]] || fail "the relay did not record every committed item"
+dc --profile demo down -v >/dev/null 2>&1
+echo "PASS: crash after relaying snapshot 2 resent its items on restart; the restarted case store recorded each review item once."

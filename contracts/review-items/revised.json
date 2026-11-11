@@ -1,0 +1,60 @@
+{
+  "deliveryId": "d0f7dfc6a3fbd05d81908289240f77283eafb1d96c63a54b1da8a2a5968c57ff",
+  "reviewItemId": "UNIT-B",
+  "productId": "UNIT-B",
+  "change": "REVISED",
+  "changeReason": "ASSESSMENT_CHANGED",
+  "snapshotId": 1,
+  "previousSnapshotId": 0,
+  "assessment": "QUALITY_REVIEW",
+  "previousAssessment": "INSUFFICIENT_DATA",
+  "assessmentHash": "c9fea51055143af4cb7fe9fbde5594af5f794e48cb82215df0c2814cdb8b79df",
+  "previousAssessmentHash": "5f82348b886c6fbec9b660fa18a49e1de6dca1552a54f1251a836bb39baa899d",
+  "assessmentReasons": [
+    "EXCURSION_ABOVE_ALLOWANCE"
+  ],
+  "dataQualityFlags": [
+    "MISSING_CUSTODY"
+  ],
+  "lotIds": [
+    "LOT-1"
+  ],
+  "productCodes": [
+    "DRUG-DEMO"
+  ],
+  "policyVersion": "assessment-policy-v1",
+  "ruleVersion": "exposure-v4",
+  "lineageId": "lineage-alerts",
+  "sourceRevisions": [
+    {
+      "kind": "ASSIGNMENT",
+      "eventId": "assign",
+      "revision": 2,
+      "payloadHash": "b36bbf2820f62d54170f487e5527c938a9597fc7db9c9642fdac33f720ab5fb8"
+    },
+    {
+      "kind": "CALIBRATION",
+      "eventId": "calibration-1",
+      "revision": 1,
+      "payloadHash": "42dce693eda63bbf9e505b767182f5db094846ec46a2b0c2e303a9e5f2ffa3d0"
+    },
+    {
+      "kind": "PLACEMENT",
+      "eventId": "place-B",
+      "revision": 1,
+      "payloadHash": "1d6a156bda5a308f44a739eeaba18bbdc36f9dbda95a8758fddba46e94d363d2"
+    },
+    {
+      "kind": "READING",
+      "eventId": "reading-hot",
+      "revision": 1,
+      "payloadHash": "84a67464f88261ad9f472cf71edaf8bc3aa45a1b0529c9735b51709ccf829d2a"
+    },
+    {
+      "kind": "SPEC",
+      "eventId": "spec",
+      "revision": 1,
+      "payloadHash": "98b64a09cca5b112b8dd14f461f67073ddfae666ce392cdc351c00ac9598ce6c"
+    }
+  ]
+}

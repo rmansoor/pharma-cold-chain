@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:coldchain:review-item:v1",
+  "title": "Cold-chain investigation review item, contract v1",
+  "description": "One record value on coldchain.review-items, keyed by productId. Produced from gold/review_outbox (Outbox.ITEM is the enforcing implementation). Delivery is at least once: consumers deduplicate on deliveryId and apply an item to its case only when snapshotId is greater than the one the case holds. An item reports a change in a unit's assessment; it is never a release or recall decision.",
+  "type": "object",
+  "required": ["deliveryId", "reviewItemId", "productId", "change", "changeReason", "snapshotId", "assessmentReasons", "dataQualityFlags", "lineageId"],
+  "properties": {
+    "deliveryId": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of productId, snapshotId and assessmentHash ('removed' for a removed unit): one per assessment revision."},
+    "reviewItemId": {"type": "string", "minLength": 1, "description": "The case this item updates: one per serialized unit (assessment scope PRODUCT_RETAINED_HISTORY)."},
+    "productId": {"type": "string", "minLength": 1},
+    "change": {"enum": ["NEW", "REVISED", "WITHDRAWN"]},
+    "changeReason": {"enum": ["ENTERED_REVIEW", "ASSESSMENT_CHANGED", "LEFT_REVIEW", "UNIT_REMOVED"]},
+    "snapshotId": {"type": "integer", "minimum": 0, "description": "The committed snapshot that assessed the unit; the item's revision."},
+    "previousSnapshotId": {"type": "integer", "minimum": 0, "description": "The snapshot of the assessment this item supersedes; absent for a unit not assessed before."},
+    "assessment": {"enum": ["QUALITY_REVIEW", "INSUFFICIENT_DATA", "NO_OBSERVED_EXCURSION"], "description": "Absent when the unit was removed."},
+    "previousAssessment": {"enum": ["QUALITY_REVIEW", "INSUFFICIENT_DATA", "NO_OBSERVED_EXCURSION"]},
+    "assessmentHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "previousAssessmentHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "assessmentReasons": {"type": "array", "items": {"type": "string"}},
+    "dataQualityFlags": {"type": "array", "items": {"type": "string"}, "description": "Stored flags; flags derived as of a snapshot (STALE_INVENTORY) are not included."},
+    "lotIds": {"type": "array", "items": {"type": "string"}},
+    "productCodes": {"type": "array", "items": {"type": "string"}},
+    "policyVersion": {"type": "string"},
+    "ruleVersion": {"type": "string"},
+    "lineageId": {"type": "string", "description": "Checkpoint lineage of the publishing pipeline."},
+    "sourceRevisions": {
+      "type": "array",
+      "description": "Evidence: the exact event revisions the assessment rests on (the last assessment's, for a removed unit). Intervals and segments are read by productId and snapshotId.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "eventId", "revision", "payloadHash"],
+        "properties": {"kind": {"type": "string"}, "eventId": {"type": "string"}, "revision": {"type": "integer", "minimum": 1}, "payloadHash": {"type": "string"}}
+      }
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"change": {"const": "NEW"}}}, "then": {"required": ["assessment", "assessmentHash"], "properties": {"changeReason": {"const": "ENTERED_REVIEW"}, "assessment": {"enum": ["QUALITY_REVIEW", "INSUFFICIENT_DATA"]}}}},
+    {"if": {"properties": {"change": {"const": "REVISED"}}}, "then": {"required": ["assessment", "assessmentHash", "previousSnapshotId", "previousAssessment", "previousAssessmentHash"], "properties": {"changeReason": {"const": "ASSESSMENT_CHANGED"}, "assessment": {"enum": ["QUALITY_REVIEW", "INSUFFICIENT_DATA"]}}}},
+    {"if": {"properties": {"change": {"const": "WITHDRAWN"}}}, "then": {"required": ["previousSnapshotId", "previousAssessment"], "properties": {"changeReason": {"enum": ["LEFT_REVIEW", "UNIT_REMOVED"]}, "previousAssessment": {"enum": ["QUALITY_REVIEW", "INSUFFICIENT_DATA"]}}}}
+  ]
+}

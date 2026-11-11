@@ -83,7 +83,7 @@ flowchart LR
  GOV -. governs .-> GL
 ```
 
-Proposed: managed Spark executors, shared object storage, replicated Kafka, versioned schema management, controlled replay, a read API and an idempotent publication outbox. No cloud provider, managed vendor, orchestration engine or UI is selected yet. These are architecture requirements, not claims of deployed services.
+Proposed: managed Spark executors, shared object storage, replicated Kafka, versioned schema management, controlled replay and a read API. The prototype implements the publication outbox (gold/review_outbox, relayed to coldchain.review-items) and an idempotent case-store consumer; a reviewer workbench is not built. No cloud provider, managed vendor, orchestration engine or UI is selected yet. These are architecture requirements, not claims of deployed services.
 
 ## Processing workflow
 

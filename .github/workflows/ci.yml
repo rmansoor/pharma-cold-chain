@@ -28,13 +28,13 @@ jobs:
     env: {ALLOW_SYNTHETIC_SPECS: 'true', CODE_VERSION: '${{ github.sha }}'}
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose up -d --build pipeline
+      - run: docker compose up -d --build pipeline cases
       - run: docker compose --profile demo run --rm simulator
       - run: docker compose --profile demo run --rm verify
       # Full recomputation of the same Bronze history in a separate namespace must match the incremental snapshot.
       - run: docker compose --profile demo run --rm verify io.coldchain.Replay /data /tmp/replay
       - run: scripts/restart-check.sh pharma-cold-chain
-      - name: Crash after Bronze commit and before a Gold manifest, then replay
+      - name: Crash after Bronze commit, before a Gold manifest and after a relay, then replay
         run: docker compose down -v && scripts/crash-check.sh
       - if: failure()
         run: |

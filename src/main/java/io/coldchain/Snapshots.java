@@ -101,7 +101,7 @@ public final class Snapshots {
  // Before writing snapshot id again, remove what an earlier attempt left without a manifest, so the retry's rows are the
  // only ones and a change between attempts cannot leave stale rows behind.
  static void discardUncommitted(SparkSession s,String base,long id) {
-  for(String t:List.of(HISTORY,INTERVALS,SEGMENTS,IMPACTS))if(exists(s,base,t))DeltaTable.forPath(s,base+"/"+t).delete(col("snapshotId").equalTo(id));
+  for(String t:List.of(HISTORY,INTERVALS,SEGMENTS,IMPACTS,Outbox.OUTBOX))if(exists(s,base,t))DeltaTable.forPath(s,base+"/"+t).delete(col("snapshotId").equalTo(id));
  }
  // Content digests of a snapshot's state, covering content only (not times or identities), so an incremental snapshot can be
  // compared with a full recomputation or a replay of the same source history.

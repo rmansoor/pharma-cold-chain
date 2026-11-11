@@ -29,7 +29,7 @@ services:
     entrypoint: [/bin/bash, -ec]
     command:
       - |
-        for topic in coldchain.sensors coldchain.traceability coldchain.inventory coldchain.specifications; do
+        for topic in coldchain.sensors coldchain.traceability coldchain.inventory coldchain.specifications coldchain.review-items; do
           /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic "$$topic" --partitions 4 --replication-factor 1 --config retention.ms=604800000
         done
   pipeline:
@@ -39,6 +39,14 @@ services:
     ports: ["4041:4040"]
     environment: {KAFKA_BOOTSTRAP: 'kafka:9092', DATA_DIR: /data, FAIL_AT: '${FAIL_AT:-}', CODE_VERSION: '${CODE_VERSION:-dev}', ALLOW_SYNTHETIC_SPECS: '${ALLOW_SYNTHETIC_SPECS:-false}'}
     volumes: ["pipeline-data:/data"]
+  # Reviewers' case store: consumes coldchain.review-items into its own volume.
+  cases:
+    build: .
+    depends_on:
+      topics: {condition: service_completed_successfully}
+    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', CASES_DIR: /cases, FAIL_AT: '${CASES_FAIL_AT:-}'}
+    volumes: ["case-data:/cases"]
+    command: [io.coldchain.CaseStore]
   simulator:
     build: .
     profiles: [demo]
@@ -49,9 +57,10 @@ services:
   verify:
     build: .
     profiles: [demo]
-    environment: {DATA_DIR: /data, VERIFY_TIMEOUT_SECONDS: '${VERIFY_TIMEOUT_SECONDS:-600}'}
-    volumes: ["pipeline-data:/data"]
+    environment: {DATA_DIR: /data, CASES_DIR: /cases, VERIFY_TIMEOUT_SECONDS: '${VERIFY_TIMEOUT_SECONDS:-600}'}
+    volumes: ["pipeline-data:/data", "case-data:/cases"]
     command: [io.coldchain.VerifyDemo]
 volumes:
   kafka-data:
   pipeline-data:
+  case-data:
