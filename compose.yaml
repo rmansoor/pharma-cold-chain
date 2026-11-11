@@ -1,60 +1,73 @@
+# Kafka requires TLS and SASL on every listener and authorizes each principal by ACL (ops/security). The keys service
+# generates the CA, keystores and credentials into the kafka-secrets volume once; each service mounts only its own
+# principal's directory, read-only, at /etc/coldchain/kafka. Application containers run as a non-root user and mount the lake
+# read-only unless they write it.
+x-app: &app
+  build: .
+  depends_on:
+    topics: {condition: service_completed_successfully}
+x-governance: &governance "./ops/governance:/etc/coldchain/governance:ro"
 services:
+  keys:
+    image: apache/kafka:3.9.1
+    user: "0"
+    entrypoint: [/bin/sh, /init.sh]
+    volumes: ["kafka-secrets:/secrets", "./ops/security/init.sh:/init.sh:ro"]
   kafka:
     image: apache/kafka:3.9.1
+    depends_on:
+      keys: {condition: service_completed_successfully}
     ports: ["29092:29092"]
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
-    volumes: ["kafka-data:/var/lib/kafka/data"]
+    entrypoint: [/bin/bash, -ec]
+    command:
+      - |
+        [ -f /var/lib/kafka/data/meta.properties ] || /opt/kafka/bin/kafka-storage.sh format -t "$$(cat /etc/coldchain/broker/cluster.id)" -c /etc/coldchain/broker/server.properties
+        exec /opt/kafka/bin/kafka-server-start.sh /etc/coldchain/broker/server.properties
+    volumes:
+      - "kafka-data:/var/lib/kafka/data"
+      - {type: volume, source: kafka-secrets, target: /etc/coldchain/broker, read_only: true, volume: {subpath: broker}}
+      # Operator tooling inside the broker container (scripts) acts as admin.
+      - {type: volume, source: kafka-secrets, target: /etc/coldchain/kafka, read_only: true, volume: {subpath: admin}}
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /etc/coldchain/kafka/client.properties --list >/dev/null 2>&1"]
       interval: 5s
-      timeout: 10s
-      retries: 30
+      timeout: 20s
+      retries: 40
   topics:
     image: apache/kafka:3.9.1
     depends_on:
       kafka: {condition: service_healthy}
-    entrypoint: [/bin/bash, -ec]
-    command:
-      - |
-        for topic in coldchain.sensors coldchain.traceability coldchain.inventory coldchain.specifications coldchain.review-items; do
-          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic "$$topic" --partitions 4 --replication-factor 1 --config retention.ms=604800000
-        done
+    entrypoint: [/bin/bash, /topics.sh]
+    volumes:
+      - "./ops/security/topics.sh:/topics.sh:ro"
+      - {type: volume, source: kafka-secrets, target: /etc/coldchain/kafka, read_only: true, volume: {subpath: admin}}
   pipeline:
-    build: .
-    depends_on:
-      topics: {condition: service_completed_successfully}
+    <<: *app
     ports: ["4041:4040"]
-    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', DATA_DIR: '${PIPELINE_DATA_DIR:-/data}', FAIL_AT: '${FAIL_AT:-}', STALL_AT: '${STALL_AT:-}', REVIEW_TOPIC: '${REVIEW_TOPIC:-coldchain.review-items}', CODE_VERSION: '${CODE_VERSION:-dev}', ALLOW_SYNTHETIC_SPECS: '${ALLOW_SYNTHETIC_SPECS:-false}'}
-    volumes: ["pipeline-data:/data"]
+    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', KAFKA_CLIENT_CONFIG: /etc/coldchain/kafka/client.properties, DATA_DIR: '${PIPELINE_DATA_DIR:-/data}', AUDIT_DIR: /audit,
+      GOVERNANCE_PRINCIPALS: /etc/coldchain/governance/principals.json, FAIL_AT: '${FAIL_AT:-}', STALL_AT: '${STALL_AT:-}',
+      REVIEW_TOPIC: '${REVIEW_TOPIC:-coldchain.review-items}', CODE_VERSION: '${CODE_VERSION:-dev}', ALLOW_SYNTHETIC_SPECS: '${ALLOW_SYNTHETIC_SPECS:-false}'}
+    volumes:
+      - "pipeline-data:/data"
+      - "audit-data:/audit"
+      - *governance
+      - {type: volume, source: kafka-secrets, target: /etc/coldchain/kafka, read_only: true, volume: {subpath: pipeline}}
   # Reviewers' case store: consumes coldchain.review-items into its own volume.
   cases:
-    build: .
-    depends_on:
-      topics: {condition: service_completed_successfully}
-    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', CASES_DIR: /cases, FAIL_AT: '${CASES_FAIL_AT:-}'}
-    volumes: ["case-data:/cases"]
+    <<: *app
+    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', KAFKA_CLIENT_CONFIG: /etc/coldchain/kafka/client.properties, CASES_DIR: /cases, FAIL_AT: '${CASES_FAIL_AT:-}'}
+    volumes:
+      - "case-data:/cases"
+      - {type: volume, source: kafka-secrets, target: /etc/coldchain/kafka, read_only: true, volume: {subpath: cases}}
     command: [io.coldchain.CaseStore]
   # Operations (profile ops): metrics from outside the pipeline, alert rules and a dashboard. Bound to localhost only.
   monitor:
-    build: .
+    <<: *app
     profiles: [ops]
-    depends_on:
-      topics: {condition: service_completed_successfully}
-    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', DATA_DIR: '${PIPELINE_DATA_DIR:-/data}', METRICS_PORT: '9400'}
-    volumes: ["pipeline-data:/data:ro"]
+    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', KAFKA_CLIENT_CONFIG: /etc/coldchain/kafka/client.properties, DATA_DIR: '${PIPELINE_DATA_DIR:-/data}', METRICS_PORT: '9400'}
+    volumes:
+      - "pipeline-data:/data:ro"
+      - {type: volume, source: kafka-secrets, target: /etc/coldchain/kafka, read_only: true, volume: {subpath: monitor}}
     ports: ["127.0.0.1:9400:9400"]
     # It reads only the newest manifest and file sizes: a small heap, so the ops profile fits beside the pipeline.
     entrypoint: [java, --add-opens=java.base/sun.nio.ch=ALL-UNNAMED, -Xmx512m, -cp, '/app/pipeline.jar:/app/lib/*']
@@ -74,20 +87,31 @@ services:
     environment: {GF_AUTH_ANONYMOUS_ENABLED: 'true', GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer, GF_AUTH_DISABLE_LOGIN_FORM: 'true', GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cold-chain.json}
     volumes: ["./ops/grafana/provisioning:/etc/grafana/provisioning:ro", "./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro"]
   simulator:
-    build: .
+    <<: *app
     profiles: [demo]
-    depends_on:
-      topics: {condition: service_completed_successfully}
-    environment: {KAFKA_BOOTSTRAP: 'kafka:9092'}
+    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', KAFKA_CLIENT_CONFIG: /etc/coldchain/kafka/client.properties}
+    volumes: [{type: volume, source: kafka-secrets, target: /etc/coldchain/kafka, read_only: true, volume: {subpath: simulator}}]
     command: [io.coldchain.Simulator]
+  # Readers and operator tools (verifier, Inspect, Query, Replay, Governance, Retention): the lake and the case store
+  # read-only, the audit log writable. The caller is COLDCHAIN_PRINCIPAL, checked against the principal registry.
   verify:
     build: .
     profiles: [demo]
-    environment: {DATA_DIR: /data, CASES_DIR: /cases, VERIFY_TIMEOUT_SECONDS: '${VERIFY_TIMEOUT_SECONDS:-600}'}
-    volumes: ["pipeline-data:/data", "case-data:/cases"]
+    environment: {DATA_DIR: /data, CASES_DIR: /cases, AUDIT_DIR: /audit, GOVERNANCE_PRINCIPALS: /etc/coldchain/governance/principals.json,
+      COLDCHAIN_PRINCIPAL: '${COLDCHAIN_PRINCIPAL:-demo-operator}', VERIFY_TIMEOUT_SECONDS: '${VERIFY_TIMEOUT_SECONDS:-600}'}
+    volumes: ["pipeline-data:/data:ro", "case-data:/cases:ro", "audit-data:/audit", *governance]
     command: [io.coldchain.VerifyDemo]
+  # Retention executes as an operator tool that may write the lake (profile ops); everything else in it is as verify.
+  retention:
+    build: .
+    profiles: [ops]
+    environment: {DATA_DIR: /data, AUDIT_DIR: /audit, GOVERNANCE_PRINCIPALS: /etc/coldchain/governance/principals.json, COLDCHAIN_PRINCIPAL: '${COLDCHAIN_PRINCIPAL:-}'}
+    volumes: ["pipeline-data:/data", "audit-data:/audit", *governance]
+    entrypoint: [java, --add-opens=java.base/sun.nio.ch=ALL-UNNAMED, -Xmx1g, -cp, '/app/pipeline.jar:/app/lib/*', io.coldchain.Retention]
 volumes:
   kafka-data:
+  kafka-secrets:
   pipeline-data:
   case-data:
+  audit-data:
   prometheus-data:

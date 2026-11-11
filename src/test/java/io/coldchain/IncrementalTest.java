@@ -91,8 +91,10 @@ class IncrementalTest {
   assertEquals(List.of("1 assign REVISED 1->2","7 place-B WITHHELD 1->-","8 assign-again ADDED -->1"),TimelineTest.strings(
    Snapshots.table(s,d,Snapshots.IMPACTS).filter("snapshotId IN (1,7,8)"),
    "concat(snapshotId,' ',eventId,' ',change,' ',coalesce(CAST(oldRevision AS string),'-'),'->',coalesce(CAST(newRevision AS string),'-'))"));
-  // Allowing synthetic thresholds no longer: a configuration change recomputes everything.
+  // Allowing synthetic thresholds no longer: a configuration change, approved by quality (GovernanceTest refuses one that is
+  // not), recomputes everything.
   s.conf().set(Specifications.ALLOW_SYNTHETIC,false);
+  Pipeline.DATA=d;Governance.approve(s,"demo-quality","RULE_CHANGE",Governance.ruleSubject(false),null,"stop using synthetic thresholds");
   try {
    Row config=step(d,9,"FULL",List.of("UNIT-A","UNIT-D"),List.of(revised(10,"custodianId","CARRIER-3")));
    assertEquals("CONFIGURATION_CHANGED",config.getAs("recomputeReason"));

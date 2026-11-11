@@ -46,6 +46,7 @@ public final class Simulator {
  public static void main(String[] args)throws Exception {
   Properties p=new Properties();p.put("bootstrap.servers",System.getenv().getOrDefault("KAFKA_BOOTSTRAP","kafka:9092"));
   p.put("key.serializer",StringSerializer.class.getName());p.put("value.serializer",StringSerializer.class.getName());p.put("acks","all");p.put("enable.idempotence","true");
+  p.putAll(KafkaClients.config());
   try(KafkaProducer<String,String> producer=new KafkaProducer<>(p)) {
    for(Map<String,Object> e:initial())producer.send(record(topic((String)e.get("kind")),(String)e.get("eventId"),JSON.writeValueAsString(e))).get();
    Map<String,Object> reading=initial().get(6);

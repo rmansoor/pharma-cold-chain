@@ -1,0 +1,7 @@
+[
+ {"principal": "demo-operator", "roles": ["OPERATOR", "INVESTIGATOR"], "note": "runs the demo verifier, Replay and retention plans"},
+ {"principal": "demo-quality", "roles": ["QUALITY"], "note": "approves rule, policy and configuration changes and retention plans"},
+ {"principal": "qa-investigator", "roles": ["INVESTIGATOR"]},
+ {"principal": "hospital-demo", "roles": ["RECIPIENT"], "recipients": ["HOSPITAL-DEMO"]},
+ {"principal": "warehouse-1", "roles": ["SITE"], "locations": ["WAREHOUSE-1"]}
+]

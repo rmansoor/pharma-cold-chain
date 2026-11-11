@@ -33,7 +33,7 @@ public final class CaseStore {
  }
  public static void main(String[] args)throws Exception {
   SparkSession s=Pipeline.session("Cold-chain case store");
-  s.readStream().format("kafka").option("kafka.bootstrap.servers",System.getenv().getOrDefault("KAFKA_BOOTSTRAP","kafka:9092"))
+  s.readStream().format("kafka").option("kafka.bootstrap.servers",System.getenv().getOrDefault("KAFKA_BOOTSTRAP","kafka:9092")).options(KafkaClients.sparkOptions())
    .option("subscribe",Outbox.TOPIC).option("startingOffsets","earliest").option("failOnDataLoss",true).load()
    .writeStream().option("checkpointLocation",DIR+"/checkpoints/cases").trigger(Trigger.ProcessingTime("5 seconds"))
    .foreachBatch((VoidFunction2<Dataset<Row>,Long>)(batch,id)->apply(parse(batch),DIR,id)).start().awaitTermination();

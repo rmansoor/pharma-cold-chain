@@ -12,7 +12,7 @@ public final class ImpactQueries {
  private ImpactQueries() {}
  // What a caller may read. An investigator (quality assurance) reads everything. A recipient reads the units shipped to it,
  // with only its own shipments; a site reads the units whose latest known location is that site, without shipments.
- // Authentication is not part of this prototype: the caller's identity and scope must come from the deployment (CC-15).
+ // The scope is granted by the principal registry at the entry point (Query, Governance.scope); reads are audited here.
  public record Scope(String principal,boolean all,Set<String> recipients,Set<String> locations) {
   public static Scope investigator(String principal){return new Scope(principal,true,Set.of(),Set.of());}
   public static Scope recipient(String principal,String... ids){return new Scope(principal,false,Set.of(ids),Set.of());}
@@ -78,7 +78,7 @@ public final class ImpactQueries {
  // snapshot. Later pages, given the returned cursor, read that same snapshot whatever has been published since.
  public static Page query(SparkSession s,String base,Scope scope,Filter f,int limit,String cursor) {
   if(limit<1)throw new IllegalArgumentException("limit must be positive");
-  authorize(scope,f);
+  try{authorize(scope,f);}catch(AccessDenied e){Governance.audit(s,scope.principal(),null,"READ",String.valueOf(f),"DENIED",e.getMessage());throw e;}
   String query=fingerprint(scope,f);
   Position at=cursor==null?null:position(cursor);
   if(at!=null&&!at.query().equals(query))throw new IllegalArgumentException("cursor belongs to a different query or scope");
@@ -99,14 +99,20 @@ public final class ImpactQueries {
   List<Row> page=rows.orderBy("productId").limit(limit+1).collectAsList();
   boolean more=page.size()>limit;
   if(more)page=page.subList(0,limit);
+  // Every governed read is audited: who, in which scope, what filter, which snapshot and how many units.
+  Governance.audit(s,scope.principal(),null,"READ",String.valueOf(f),"ALLOWED","snapshot "+snapshot+", scope "+(scope.all()?"investigator":"recipients "+scope.recipients()+" locations "+scope.locations())
+   +", units "+page.size()+(at==null?"":", after "+at.last()));
   return new Page(snapshot,page,more?cursor(snapshot,page.get(page.size()-1).getAs("productId"),query):null);
  }
  // The interval evidence behind one unit's assessment in a committed snapshot, if the scope may read that unit.
  public static Dataset<Row> evidence(SparkSession s,String base,Scope scope,long snapshot,String productId) {
   Row commit=commit(s,base,snapshot);
   // Visibility is judged in the requested snapshot, not the newest one.
-  if(!scope.all()&&visible(units(s,base,commit).filter(col("productId").equalTo(productId)),scope).isEmpty())
+  if(!scope.all()&&visible(units(s,base,commit).filter(col("productId").equalTo(productId)),scope).isEmpty()) {
+   Governance.audit(s,scope.principal(),null,"READ_EVIDENCE",productId,"DENIED","snapshot "+snapshot);
    throw new AccessDenied(scope.principal()+" may not read the evidence of "+productId);
+  }
+  Governance.audit(s,scope.principal(),null,"READ_EVIDENCE",productId,"ALLOWED","snapshot "+snapshot);
   return Snapshots.intervals(s,base,commit).filter(col("productId").equalTo(productId));
  }
 }
