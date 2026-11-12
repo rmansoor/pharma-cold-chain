@@ -43,6 +43,24 @@ public final class Simulator {
   r.headers().add(new RecordHeader("source-system","simulator".getBytes(java.nio.charset.StandardCharsets.UTF_8)));return r;
  }
  static String topic(String kind){return switch(kind){case "READING","CALIBRATION"->"coldchain.sensors";case "SPEC"->"coldchain.specifications";case "INVENTORY"->"coldchain.inventory";default->"coldchain.traceability";};}
+ // The correction must arrive after a snapshot published the initial state: wait for a committed manifest whose Silver holds
+ // every initial event (inventory-C is withheld while its conflict is open), instead of a fixed pause.
+ static void awaitInitial()throws Exception {
+  org.apache.spark.sql.SparkSession s=Pipeline.session("Cold-chain simulator");s.sparkContext().setLogLevel("ERROR");
+  try {
+   Set<String> ids=new TreeSet<>();for(Map<String,Object> e:initial())ids.add((String)e.get("eventId"));
+   long started=System.currentTimeMillis();
+   while(System.currentTimeMillis()-started<Long.parseLong(System.getenv().getOrDefault("VERIFY_TIMEOUT_SECONDS","600"))*1000) {
+    org.apache.spark.sql.Row c=Snapshots.exists(s,Pipeline.DATA,Snapshots.COMMITS)?Snapshots.latest(s,Pipeline.DATA):null;
+    if(c!=null&&Silver.at(s,Pipeline.DATA,Silver.CURRENT,Silver.versions(c).get(Silver.CURRENT)).filter(org.apache.spark.sql.functions.col("eventId").isin(ids.toArray()))
+      .select("eventId").distinct().count()==ids.size()) {
+     System.out.println("Snapshot "+c.getAs("snapshotId")+" holds the initial state after "+(System.currentTimeMillis()-started)+" ms.");return;
+    }
+    Thread.sleep(2000);
+   }
+   throw new IllegalStateException("no committed snapshot holds the initial state");
+  } finally {s.stop();}
+ }
  public static void main(String[] args)throws Exception {
   Properties p=new Properties();p.put("bootstrap.servers",System.getenv().getOrDefault("KAFKA_BOOTSTRAP","kafka:9092"));
   p.put("key.serializer",StringSerializer.class.getName());p.put("value.serializer",StringSerializer.class.getName());p.put("acks","all");p.put("enable.idempotence","true");
@@ -55,8 +73,8 @@ public final class Simulator {
    // Two different payloads for one ID and revision open a conflict case. UNIT-C has no placement, so Gold is unaffected.
    for(String status:List.of("IN_STOCK","DISPATCHED"))
     producer.send(record("coldchain.inventory","inventory-C",JSON.writeValueAsString(event("inventory-C","INVENTORY","productId","UNIT-C","location","WAREHOUSE-1","status",status)))).get();
-   producer.flush();System.out.println("Initial: UNIT-A and UNIT-D (carton/pallet in BOX-A) quality review; UNIT-B insufficient data. Waiting 40s for initial snapshot.");
-   Thread.sleep(40000);
+   producer.flush();System.out.println("Initial: UNIT-A and UNIT-D (carton/pallet in BOX-A) quality review; UNIT-B insufficient data. Waiting for a committed snapshot holding it.");
+   awaitInitial();
    Map<String,Object> correction=new LinkedHashMap<>(initial().get(3));
    correction.put("revision",2);correction.put("containerId","BOX-B");
    producer.send(record("coldchain.traceability","assign",JSON.writeValueAsString(correction))).get();
