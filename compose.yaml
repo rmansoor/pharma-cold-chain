@@ -37,7 +37,7 @@ services:
     depends_on:
       topics: {condition: service_completed_successfully}
     ports: ["4041:4040"]
-    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', DATA_DIR: /data, FAIL_AT: '${FAIL_AT:-}', CODE_VERSION: '${CODE_VERSION:-dev}', ALLOW_SYNTHETIC_SPECS: '${ALLOW_SYNTHETIC_SPECS:-false}'}
+    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', DATA_DIR: '${PIPELINE_DATA_DIR:-/data}', FAIL_AT: '${FAIL_AT:-}', STALL_AT: '${STALL_AT:-}', REVIEW_TOPIC: '${REVIEW_TOPIC:-coldchain.review-items}', CODE_VERSION: '${CODE_VERSION:-dev}', ALLOW_SYNTHETIC_SPECS: '${ALLOW_SYNTHETIC_SPECS:-false}'}
     volumes: ["pipeline-data:/data"]
   # Reviewers' case store: consumes coldchain.review-items into its own volume.
   cases:
@@ -47,6 +47,32 @@ services:
     environment: {KAFKA_BOOTSTRAP: 'kafka:9092', CASES_DIR: /cases, FAIL_AT: '${CASES_FAIL_AT:-}'}
     volumes: ["case-data:/cases"]
     command: [io.coldchain.CaseStore]
+  # Operations (profile ops): metrics from outside the pipeline, alert rules and a dashboard. Bound to localhost only.
+  monitor:
+    build: .
+    profiles: [ops]
+    depends_on:
+      topics: {condition: service_completed_successfully}
+    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', DATA_DIR: '${PIPELINE_DATA_DIR:-/data}', METRICS_PORT: '9400'}
+    volumes: ["pipeline-data:/data:ro"]
+    ports: ["127.0.0.1:9400:9400"]
+    # It reads only the newest manifest and file sizes: a small heap, so the ops profile fits beside the pipeline.
+    entrypoint: [java, --add-opens=java.base/sun.nio.ch=ALL-UNNAMED, -Xmx512m, -cp, '/app/pipeline.jar:/app/lib/*']
+    command: [io.coldchain.Monitor]
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [ops]
+    depends_on: [monitor]
+    ports: ["127.0.0.1:9490:9090"]
+    volumes: ["./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro", "./ops/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro", "prometheus-data:/prometheus"]
+  grafana:
+    image: grafana/grafana:12.0.2
+    profiles: [ops]
+    depends_on: [prometheus]
+    ports: ["127.0.0.1:3400:3000"]
+    # Read-only anonymous viewing on localhost; no login or stored credentials.
+    environment: {GF_AUTH_ANONYMOUS_ENABLED: 'true', GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer, GF_AUTH_DISABLE_LOGIN_FORM: 'true', GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cold-chain.json}
+    volumes: ["./ops/grafana/provisioning:/etc/grafana/provisioning:ro", "./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro"]
   simulator:
     build: .
     profiles: [demo]
@@ -64,3 +90,4 @@ volumes:
   kafka-data:
   pipeline-data:
   case-data:
+  prometheus-data:

@@ -1,0 +1,79 @@
+# Alert rules for the cold-chain pipeline. Thresholds and their measured baselines: docs/decisions-and-operations.md,
+# "Observability and service objectives". Each annotation names the runbook section to follow.
+groups:
+  - name: coldchain
+    rules:
+      # Records wait in Kafka and no manifest has covered them for 5 minutes. The age comes from Kafka, not from the pipeline,
+      # so this fires while the pipeline process, Spark and its UI are all still up. An idle pipeline has age 0.
+      - alert: ColdChainPublicationStalled
+        expr: coldchain_oldest_unpublished_age_seconds > 300
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "No snapshot has published records that arrived {{ $value | humanizeDuration }} ago"
+          runbook: "docs/decisions-and-operations.md#triage-stalled-publication"
+      # Without metrics no other rule can fire, so a missing or failing monitor is itself an alert.
+      - alert: ColdChainMonitorDown
+        expr: up{job="coldchain-monitor"} == 0 or coldchain_monitor_up == 0 or time() - coldchain_monitor_last_success_timestamp_seconds > 120
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "Cold-chain metrics are not being collected"
+          runbook: "docs/decisions-and-operations.md#triage-stalled-publication"
+      - alert: ColdChainMonitorAbsent
+        expr: absent(up{job="coldchain-monitor"})
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "Prometheus has no cold-chain monitor target"
+          runbook: "docs/decisions-and-operations.md#triage-stalled-publication"
+      # Publishing, but slower than the proposed objective (records published within 2 minutes of arrival).
+      - alert: ColdChainPublicationSlow
+        expr: coldchain_publication_lag_seconds > 120
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "The newest snapshot published its batch {{ $value | humanizeDuration }} after the oldest record arrived"
+          runbook: "docs/decisions-and-operations.md#triage-stalled-publication"
+      # More than four triggers' worth of records (maxOffsetsPerTrigger 5000) waiting for 10 minutes: falling behind.
+      - alert: ColdChainBacklogHigh
+        expr: coldchain_backlog_records_total > 20000
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: "{{ $value }} records wait for publication"
+          runbook: "docs/decisions-and-operations.md#triage-stalled-publication"
+      - alert: ColdChainRelayPending
+        expr: coldchain_relay_pending_snapshots > 0
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: "{{ $value }} committed snapshots have review items not yet relayed"
+          runbook: "docs/decisions-and-operations.md#local-operating-runbook"
+      # Open conflict cases block their event IDs until a source sends a higher revision; someone must chase the source.
+      - alert: ColdChainConflictsOpen
+        expr: coldchain_conflict_cases_open > 0
+        for: 1h
+        labels: {severity: ticket}
+        annotations:
+          summary: "{{ $value }} conflict cases have been open for over an hour"
+          runbook: "docs/decisions-and-operations.md#triage-data-quality"
+      - alert: ColdChainQuarantineRising
+        expr: delta(coldchain_quarantine_open[30m]) > 50
+        labels: {severity: ticket}
+        annotations:
+          summary: "{{ $value }} more open quarantine records than 30 minutes ago"
+          runbook: "docs/decisions-and-operations.md#triage-data-quality"
+      - alert: ColdChainMissingCoverageRising
+        expr: delta(coldchain_missing_coverage_products[1h]) > 50
+        labels: {severity: ticket}
+        annotations:
+          summary: "{{ $value }} more units with missing coverage than an hour ago"
+          runbook: "docs/decisions-and-operations.md#triage-data-quality"
+      - alert: ColdChainVolumeLow
+        expr: coldchain_volume_free_bytes / coldchain_volume_bytes < 0.15
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "The data volume has {{ $value | humanizePercentage }} free"
+          runbook: "docs/decisions-and-operations.md#storage"

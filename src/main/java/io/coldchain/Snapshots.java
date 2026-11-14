@@ -127,9 +127,10 @@ public final class Snapshots {
   return null;
  }
  // The manifest row: identity, versions, how the snapshot and its Silver were computed, source high-watermarks, input and output table
- // versions and the digests of its state.
+ // versions, the digests of its state and its operating figures (stats: one bigint column each).
  static Dataset<Row> manifest(long id,String lineage,String run,String code,boolean allowSynthetic,String mode,String reason,
-   String silverMode,String silverReason,long changed,long recomputed,Dataset<Row> source,Dataset<Row> current,Dataset<Row> digests,Map<String,Long> versions) {
+   String silverMode,String silverReason,long changed,long recomputed,Dataset<Row> source,Dataset<Row> current,Dataset<Row> digests,Map<String,Long> versions,
+   Map<String,Long> stats) {
   StringJoiner tables=new StringJoiner(",","array(",")");
   versions.forEach((t,v)->tables.add("named_struct('table','"+t+"','version',CAST("+v+" AS bigint))"));
   Dataset<Row> marks=source.groupBy("topic","partition").agg(max("offset").alias("maxOffset"),max("kafkaTime").alias("maxKafkaTime"))
@@ -140,6 +141,7 @@ public final class Snapshots {
    lit(Policy.VERSION).alias("policyVersion"),lit(Model.ROW_VERSION).alias("rowVersion"),lit(allowSynthetic).alias("allowSyntheticSpecifications"),lit(mode).alias("recomputeMode"),
    lit(reason).cast("string").alias("recomputeReason"),lit(silverMode).alias("silverMode"),lit(silverReason).cast("string").alias("silverReason"),lit(changed).alias("changedEvents"),lit(recomputed).alias("recomputedProducts"),
    col("dataAsOf"),col("sourceHighWatermarks"),expr(tables.toString()).alias("tableVersions"),
-   col("evidenceRevisions"),col("evidenceDigest"),col("assessmentsDigest"),col("intervalsDigest"));
+   col("evidenceRevisions"),col("evidenceDigest"),col("assessmentsDigest"),col("intervalsDigest"))
+   .select(java.util.stream.Stream.concat(java.util.stream.Stream.of(col("*")),stats.entrySet().stream().map(e->lit(e.getValue()).cast("bigint").alias(e.getKey()))).toArray(Column[]::new));
  }
 }

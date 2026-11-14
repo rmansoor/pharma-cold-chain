@@ -68,9 +68,15 @@ public final class Pipeline {
  static final String CODE_VERSION=System.getenv().getOrDefault("CODE_VERSION","dev");
  // Fault injection (scripts/crash-check.sh, PublicationTest): FAIL_AT=<stage>:<batch> stops right after that stage of that
  // batch. In the pipeline the JVM halts, as a crash would; tests set halt=false to get an exception instead.
- static String failAt=System.getenv("FAIL_AT");
+ // STALL_AT=<stage>:<batch> blocks the batch there for good while the process, Spark and the relay keep running: the hang
+ // the stalled-publication alert must catch (scripts/ops-drill.sh).
+ static String failAt=System.getenv("FAIL_AT"),stallAt=System.getenv("STALL_AT");
  static boolean halt=true;
  static void inject(String stage,long id) {
+  if((stage+":"+id).equals(stallAt)) {
+   System.out.println("INJECTED STALL after "+stage+" batch="+id);System.out.flush();
+   while(true)try{Thread.sleep(60_000);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new IllegalStateException("stall interrupted");}
+  }
   if(!(stage+":"+id).equals(failAt))return;
   System.out.println("INJECTED FAILURE after "+stage+" batch="+id);System.out.flush();
   if(halt)Runtime.getRuntime().halt(1);
@@ -180,12 +186,27 @@ public final class Pipeline {
     "CAST(NULL AS timestamp) endTime","CAST(NULL AS bigint) seconds","CAST(array() AS array<struct<eventId:string>>) sources").limit(0))
    :Snapshots.digests(state,stateIntervals);
   String mode=reason==null?"INCREMENTAL":"FULL";
+  // Operating figures of the snapshot, recorded in its manifest (Monitor): input, open data-quality cases, outcomes of the
+  // state it publishes and stage timings. publicationLagMs runs from the Kafka time of the batch's oldest record to the manifest.
+  Row input=source.agg(count(lit(1)),count(when(col("ingestBatchId").equalTo(id),true)),min(when(col("ingestBatchId").equalTo(id),col("kafkaTime")))).first();
+  Row outcomes=state==null?null:state.agg(count(when(col("assessment").equalTo(Policy.REVIEW),true)),count(when(col("assessment").equalTo(Policy.INSUFFICIENT),true)),
+   count(when(array_contains(col("dataQualityFlags"),"MISSING_COVERAGE"),true))).first();
+  Map<String,Long> stats=new LinkedHashMap<>();
+  stats.put("bronzeRows",input.getLong(0));stats.put("batchRows",input.getLong(1));
+  stats.put("openQuarantine",Silver.at(s,DATA,Silver.QUARANTINE,versions.get(Silver.QUARANTINE)).filter("status = 'OPEN'").count());
+  stats.put("openConflicts",Silver.at(s,DATA,Silver.CASES,versions.get(Silver.CASES)).filter("status = 'OPEN'").count());
+  stats.put("reviewProducts",outcomes==null?0:outcomes.getLong(0));stats.put("insufficientProducts",outcomes==null?0:outcomes.getLong(1));
+  stats.put("missingCoverageProducts",outcomes==null?0:outcomes.getLong(2));stats.put("reviewItems",reviewItems);
+  long publishMs=(System.nanoTime()-started)/1_000_000-silverMs-impactMs-exposureMs;
+  stats.put("canonicalMs",canonicalMs);stats.put("silverMs",silverMs-canonicalMs);stats.put("impactMs",impactMs);stats.put("exposureMs",exposureMs);stats.put("publishMs",publishMs);
+  stats.put("batchMs",(System.nanoTime()-started)/1_000_000);
+  stats.put("publicationLagMs",input.get(2)==null?null:System.currentTimeMillis()-input.getTimestamp(2).getTime());
   // The manifest is written last: until it exists, nothing above is visible to readers (Snapshots).
-  merge(s,Snapshots.manifest(id,lineage,RUN_ID,CODE_VERSION,allow,mode,reason,built.mode(),built.reason(),changed,recomputed,source,current,digests,versions),
+  merge(s,Snapshots.manifest(id,lineage,RUN_ID,CODE_VERSION,allow,mode,reason,built.mode(),built.reason(),changed,recomputed,source,current,digests,versions,stats),
    DATA+"/gold/commits","t.snapshotId=s.snapshotId");
   System.out.println("COMMITTED snapshot="+id+" mode="+mode+(reason==null?"":" ("+reason+")")+" silver="+built.mode()+(built.reason()==null?"":" ("+built.reason()+")")+" changed="+changed+" recomputed="+recomputed
    +" products="+(state==null?0:state.count())+" reviewItems="+reviewItems+" canonicalMs="+canonicalMs+" silverMs="+(silverMs-canonicalMs)+" impactMs="+impactMs+" exposureMs="+exposureMs
-   +" publishMs="+((System.nanoTime()-started)/1_000_000-silverMs-impactMs-exposureMs));
+   +" publishMs="+publishMs+" publicationLagMs="+stats.get("publicationLagMs"));
   // Replay rebuilds into its own namespace and must not notify anyone; live snapshots relay their items once committed.
   if(!full)Outbox.drainQuietly(s,DATA,relay);
  }
