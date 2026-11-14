@@ -51,6 +51,19 @@ jobs:
         run: |
           docker compose down -v
           docker compose -p pharma-cold-chain-crash --profile demo down -v
+  scenario:
+    name: Run-scoped scenario (acknowledged phases, restart, partial publication, isolation)
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env: {CODE_VERSION: '${{ github.sha }}'}
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/scenario-check.sh
+      - if: failure()
+        run: docker compose -p pharma-cold-chain-scenario logs --no-color --tail 200
+      - if: always()
+        run: docker compose -p pharma-cold-chain-scenario --profile demo down -v
   ops:
     name: Operations drill (stall alert, recovery, checkpoint migration)
     needs: test

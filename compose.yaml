@@ -89,9 +89,19 @@ services:
   simulator:
     <<: *app
     profiles: [demo]
-    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', KAFKA_CLIENT_CONFIG: /etc/coldchain/kafka/client.properties}
-    volumes: [{type: volume, source: kafka-secrets, target: /etc/coldchain/kafka, read_only: true, volume: {subpath: simulator}}]
+    # Reads the lake only to wait for the snapshot that publishes its initial events before sending the correction.
+    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', KAFKA_CLIENT_CONFIG: /etc/coldchain/kafka/client.properties, DATA_DIR: /data, VERIFY_TIMEOUT_SECONDS: '${VERIFY_TIMEOUT_SECONDS:-600}'}
+    volumes: ["pipeline-data:/data:ro", {type: volume, source: kafka-secrets, target: /etc/coldchain/kafka, read_only: true, volume: {subpath: simulator}}]
     command: [io.coldchain.Simulator]
+  # The run-scoped scenario (SID-28): sends a phase as the simulator, then waits for a committed snapshot acknowledging it.
+  scenario:
+    <<: *app
+    profiles: [demo]
+    environment: {KAFKA_BOOTSTRAP: 'kafka:9092', KAFKA_CLIENT_CONFIG: /etc/coldchain/kafka/client.properties, DATA_DIR: /data}
+    volumes:
+      - "pipeline-data:/data:ro"
+      - {type: volume, source: kafka-secrets, target: /etc/coldchain/kafka, read_only: true, volume: {subpath: simulator}}
+    entrypoint: [java, --add-opens=java.base/sun.nio.ch=ALL-UNNAMED, -Xmx1g, -cp, '/app/pipeline.jar:/app/lib/*', io.coldchain.Scenario]
   # Readers and operator tools (verifier, Inspect, Query, Replay, Governance, Retention): the lake and the case store
   # read-only, the audit log writable. The caller is COLDCHAIN_PRINCIPAL, checked against the principal registry.
   verify:
