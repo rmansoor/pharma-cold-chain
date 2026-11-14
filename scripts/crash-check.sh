@@ -82,7 +82,8 @@ echo "PASS: crash before the manifest left snapshot 1 invisible; the restart pub
 # Phase 3: the case store consumes everything relayed so far; then batch 2 stops after relaying, before recording it.
 delivered() {
  for _ in $(seq 1 120); do
-  now=$(state); [[ $(field "$now" pending) -eq 0 && $(field "$now" deliveries) -eq $(field "$now" outbox) ]] && return 0; sleep 5
+  # Inspect counts relayed items and pending snapshots one after the other while the relay runs, so wait for all three.
+  now=$(state); [[ $(field "$now" pending) -eq 0 && $(field "$now" relayed) -eq $(field "$now" outbox) && $(field "$now" deliveries) -eq $(field "$now" outbox) ]] && return 0; sleep 5
  done
  return 1
 }

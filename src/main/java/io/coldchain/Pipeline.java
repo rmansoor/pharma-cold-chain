@@ -10,11 +10,16 @@ import static org.apache.spark.sql.functions.*;
 public final class Pipeline {
  static String DATA=System.getenv().getOrDefault("DATA_DIR","/data");
  public static SparkSession session(String name) {
+  // Delta keeps a JVM-wide cache of table logs that outlives a stopped session, and each cached log holds its session.
+  // A new session therefore starts with an empty cache (a no-op in the pipeline, which starts one per process; tests start
+  // one per class), and the cache is bounded: every lake path a process opens, such as the tests' temporary lakes, adds one.
+  if(SparkSession.getActiveSession().isEmpty()&&SparkSession.getDefaultSession().isEmpty())org.apache.spark.sql.delta.DeltaLog.clearCache();
   SparkSession s=SparkSession.builder().appName(name).master("local[2]")
    .config("spark.sql.extensions","io.delta.sql.DeltaSparkSessionExtension")
    .config("spark.sql.catalog.spark_catalog","org.apache.spark.sql.delta.catalog.DeltaCatalog")
    .config("spark.sql.session.timeZone","UTC").config("spark.sql.shuffle.partitions",2)
    .config("spark.databricks.delta.snapshotPartitions",2)
+   .config("spark.databricks.delta.delta.log.cacheSize",64)
    // Structured Streaming turns adaptive execution off inside foreachBatch. Off everywhere, the tests analyze plans the same
    // way the streaming job does (a self-join of checkpointed views failed only there before this).
    .config("spark.sql.adaptive.enabled",false)
