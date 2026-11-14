@@ -34,6 +34,9 @@ public final class Replay {
  public static void main(String[] args) {
   if(args.length<2)throw new IllegalArgumentException("usage: Replay <source DATA_DIR> <target DATA_DIR> [bronze version]");
   SparkSession s=Pipeline.session("Cold-chain replay");s.sparkContext().setLogLevel("ERROR");
+  String me=Governance.caller();
+  try{Governance.require(s,me,Governance.Role.OPERATOR,"REPLAY",args[0]+" -> "+args[1]);}
+  catch(ImpactQueries.AccessDenied e){System.out.println("DENIED: "+e.getMessage());s.stop();System.exit(3);}
   long bronze=args.length>2?Long.parseLong(args[2]):Pipeline.version(s,args[0]+"/bronze/events"),started=System.nanoTime();
   // Reproduce the configuration the source snapshot was computed with, not this process's environment.
   Row source=counterpart(s,args[0],bronze);
@@ -43,11 +46,15 @@ public final class Replay {
   System.out.println("REPLAYED "+args[0]+" bronze version "+bronze+" into "+args[1]+" in "+(System.nanoTime()-started)/1_000_000+" ms: "
    +replayed.getAs("products")+" products, lineage "+replayed.getAs("lineageId"));
   Row original=source;
-  if(original==null){System.out.println("No source snapshot was computed from that Bronze version; nothing to compare.");s.stop();return;}
+  if(original==null) {
+   Governance.audit(s,me,Governance.Role.OPERATOR,"REPLAY",args[0]+" -> "+args[1],"DONE","bronze version "+bronze+", no source snapshot to compare");
+   System.out.println("No source snapshot was computed from that Bronze version; nothing to compare.");s.stop();return;
+  }
   List<String> differ=new ArrayList<>(DIGESTS.stream().filter(d->!Objects.equals(original.getAs(d),replayed.getAs(d))).toList());
   // Silver too, table by table, for snapshots that recorded their Silver versions.
   Map<String,Long> silver=Silver.versions(original);
   differ.addAll(Silver.differences(s,args[0],silver,args[1],Silver.versions(replayed)));
+  Governance.audit(s,me,Governance.Role.OPERATOR,"REPLAY",args[0]+" -> "+args[1],differ.isEmpty()?"MATCH":"MISMATCH","bronze version "+bronze+", snapshot "+original.getAs("snapshotId")+(differ.isEmpty()?"":", differ "+differ));
   System.out.println(differ.isEmpty()?"MATCH: source snapshot "+original.getAs("snapshotId")+" equals the full replay (Gold digests and "+silver.size()+" Silver tables)"
    :"MISMATCH: source snapshot "+original.getAs("snapshotId")+" differs in "+differ);
   s.stop();

@@ -46,7 +46,7 @@ before=$(inspect STATE); next=$(( $(field "$before" lastSnapshot) + 1 ))
 STALL_AT="silver:$next" dc up -d pipeline >/dev/null 2>&1
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 echo "{\"eventId\":\"ops-drill-$now\",\"revision\":1,\"kind\":\"INVENTORY\",\"eventTime\":\"$now\",\"productId\":\"UNIT-A\",\"location\":\"WAREHOUSE-1\",\"status\":\"IN_STOCK\"}" \
- | dc exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic coldchain.inventory
+ | dc exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server kafka:9092 --producer.config /etc/coldchain/kafka/client.properties --topic coldchain.inventory
 sent=$(date +%s)
 for _ in $(seq 1 120); do dc logs --no-color pipeline | grep -q "INJECTED STALL after silver batch=$next" && break; sleep 5; done
 dc logs --no-color pipeline | grep -q "INJECTED STALL after silver batch=$next" || fail "pipeline did not reach the stall"
@@ -73,7 +73,7 @@ after=$(inspect STATE)
 echo "recovered $(( $(date +%s) - sent )) s after the record was sent; alert resolved: $(figures)"
 
 echo "== 4. checkpoint migration"
-dc exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic coldchain.review-items.migration --partitions 4 --replication-factor 1 >/dev/null
+dc exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /etc/coldchain/kafka/client.properties --create --if-not-exists --topic coldchain.review-items.migration --partitions 4 --replication-factor 1 >/dev/null
 old=$(inspect DIGESTS)
 dc stop pipeline >/dev/null 2>&1
 PIPELINE_DATA_DIR=/data/migrated REVIEW_TOPIC=coldchain.review-items.migration dc up -d pipeline monitor >/dev/null 2>&1

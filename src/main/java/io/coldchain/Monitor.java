@@ -175,7 +175,7 @@ public final class Monitor {
   http.start();
   Properties p=new Properties();
   p.put("bootstrap.servers",System.getenv().getOrDefault("KAFKA_BOOTSTRAP","kafka:9092"));p.put("request.timeout.ms","10000");p.put("default.api.timeout.ms","15000");
-  p.put("enable.auto.commit","false");p.put("max.poll.records","50");
+  p.put("enable.auto.commit","false");p.put("max.poll.records","50");p.putAll(KafkaClients.config());
   System.out.println("MONITOR serving :"+port+"/metrics every "+interval/1000+" s for "+base);
   try(Admin admin=Admin.create(p);KafkaConsumer<byte[],byte[]> consumer=new KafkaConsumer<>(p,new ByteArrayDeserializer(),new ByteArrayDeserializer())) {
    double lastSuccess=0;

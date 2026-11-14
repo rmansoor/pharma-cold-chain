@@ -111,6 +111,8 @@ public final class Pipeline {
   Dataset<Row> source=s.read().format("delta").option("versionAsOf",versions.get("bronze/events")).load(DATA+"/bronze/events");
   Row previous=Snapshots.latest(s,DATA);
   boolean allow=Boolean.parseBoolean(s.conf().get(Specifications.ALLOW_SYNTHETIC,"false"));
+  // A rule, policy or configuration change publishes only with quality approval (Governance); nothing is written otherwise.
+  if(!full)Governance.requireRuleApproval(s,Snapshots.fullReason(previous,CODE_VERSION,allow),allow,id);
   // Late arrivals and higher revisions revise past exposure: Silver is the durable evidence as of this Bronze version.
   Silver.Result built=Silver.build(s,DATA,id,previous,source,versions,full?"REPLAY":Silver.fullReason(previous,CODE_VERSION,allow));
   inject("silver",id);
@@ -217,7 +219,7 @@ public final class Pipeline {
   // Items left pending by a crash or an unavailable broker are sent even when no new input arrives.
   java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"review-relay");t.setDaemon(true);return t;})
    .scheduleWithFixedDelay(()->Outbox.drainQuietly(s,DATA,relay),0,10,java.util.concurrent.TimeUnit.SECONDS);
-  s.readStream().format("kafka").option("kafka.bootstrap.servers",bootstrap)
+  s.readStream().format("kafka").option("kafka.bootstrap.servers",bootstrap).options(KafkaClients.sparkOptions())
    .option("subscribe","coldchain.sensors,coldchain.traceability,coldchain.inventory,coldchain.specifications")
    .option("startingOffsets","earliest").option("includeHeaders",true).option("failOnDataLoss",true).option("maxOffsetsPerTrigger",5000).load()
    .writeStream().option("checkpointLocation",DATA+"/checkpoints/medallion")

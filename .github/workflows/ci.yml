@@ -22,11 +22,11 @@ jobs:
           docker run --rm -v "$PWD/ops/prometheus":/r -w /r --entrypoint promtool prom/prometheus:v3.5.0 test rules alerts.test.yml
           docker run --rm -v "$PWD/ops/prometheus":/etc/prometheus --entrypoint promtool prom/prometheus:v3.5.0 check config /etc/prometheus/prometheus.yml
   runtime:
-    name: Fresh Compose deployment, demo, restart and crash
+    name: Fresh Compose deployment, demo, security, restart and crash
     needs: test
     runs-on: ubuntu-24.04
-    # Each batch can take minutes on a shared runner; the demo, replay, restart and three crash phases run several
-    # (44.5 of 45 minutes on 2026-11-11).
+    # Each batch can take minutes on a shared runner; the demo, replay, security check, restart and three crash phases run
+    # several (44.5 of 45 minutes before the security check was added).
     timeout-minutes: 75
     # The demo's thresholds are synthetic; only the demo deployment may use them.
     # CODE_VERSION is recorded in every Gold manifest.
@@ -38,6 +38,8 @@ jobs:
       - run: docker compose --profile demo run --rm verify
       # Full recomputation of the same Bronze history in a separate namespace must match the incremental snapshot.
       - run: docker compose --profile demo run --rm verify io.coldchain.Replay /data /tmp/replay
+      # Kafka TLS/SASL and ACLs, container users and mounts, and application roles: every unauthorized access is refused and audited.
+      - run: scripts/security-check.sh pharma-cold-chain
       - run: scripts/restart-check.sh pharma-cold-chain
       - name: Crash after Bronze commit, before a Gold manifest and after a relay, then replay
         run: docker compose down -v && scripts/crash-check.sh
@@ -49,6 +51,19 @@ jobs:
         run: |
           docker compose down -v
           docker compose -p pharma-cold-chain-crash --profile demo down -v
+  scenario:
+    name: Run-scoped scenario (acknowledged phases, restart, partial publication, isolation)
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env: {CODE_VERSION: '${{ github.sha }}'}
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/scenario-check.sh
+      - if: failure()
+        run: docker compose -p pharma-cold-chain-scenario logs --no-color --tail 200
+      - if: always()
+        run: docker compose -p pharma-cold-chain-scenario --profile demo down -v
   ops:
     name: Operations drill (stall alert, recovery, checkpoint migration)
     needs: test
