@@ -41,8 +41,11 @@ public final class Snapshots {
    .filter("n = 1 AND NOT coalesce(removed,false)").drop("n");
  }
  // Stored assessments in the state of a committed snapshot, without the dataAsOf-dependent fields.
+ // A snapshot whose superseded rows retention removed (Retention) no longer has a state of its own: reading it is refused.
  static Dataset<Row> state(SparkSession s,String base,Row commit) {
   long id=commit.getAs("snapshotId");
+  if(Arrays.asList(commit.schema().fieldNames()).contains("purgedAt")&&!commit.isNullAt(commit.fieldIndex("purgedAt")))
+   throw new IllegalStateException("snapshot "+id+" was purged by retention at "+commit.getAs("purgedAt"));
   return resolve(at(s,base,commit,HISTORY),table(s,base,COMMITS).filter(col("snapshotId").leq(id)),id);
  }
  // The assessments a reader sees for a committed snapshot: its state, with inventory age and the flags that depend on it

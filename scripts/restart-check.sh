@@ -20,7 +20,7 @@ idle=$(state); echo "restart: $idle"
 
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 echo "{\"eventId\":\"restart-check-$now\",\"revision\":1,\"kind\":\"INVENTORY\",\"eventTime\":\"$now\",\"productId\":\"UNIT-A\",\"location\":\"WAREHOUSE-1\",\"status\":\"IN_STOCK\"}" \
- | dc exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic coldchain.inventory
+ | dc exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server kafka:9092 --producer.config /etc/coldchain/kafka/client.properties --topic coldchain.inventory
 for _ in $(seq 1 120); do
  after=$(state); [[ $(field "$after" lastSnapshot) -gt $(field "$before" lastSnapshot) ]] && break; sleep 5
 done

@@ -66,6 +66,7 @@ public final class Outbox {
   Properties p=new Properties();
   p.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG,bootstrap);p.put(ProducerConfig.ACKS_CONFIG,"all");p.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG,true);
   p.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,StringSerializer.class.getName());p.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,StringSerializer.class.getName());
+  p.putAll(KafkaClients.config());
   Producer<String,String> producer=new KafkaProducer<>(p);
   return (id,messages)->{
    List<Future<RecordMetadata>> sent=new ArrayList<>();

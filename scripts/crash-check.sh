@@ -24,7 +24,7 @@ publish() {
  case $(sed -E 's/.*"kind": *"([A-Z]+)".*/\1/' <<<"$line") in
   READING|CALIBRATION) topic=coldchain.sensors;; SPEC) topic=coldchain.specifications;; INVENTORY) topic=coldchain.inventory;; *) topic=coldchain.traceability;;
  esac
- echo "$line" | dc exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic "$topic"
+ echo "$line" | dc exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server kafka:9092 --producer.config /etc/coldchain/kafka/client.properties --topic "$topic"
 }
 for f in contracts/examples/*.json; do publish "$f"; done
 stopped() {
